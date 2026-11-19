@@ -528,6 +528,29 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     INDEX idx_audit_created (created_at),
     INDEX idx_audit_user (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 9. Add-on-System & Telematik-Middleware-Anbieter (KIM 1.5, ePA 3.0, VSDM, TI-Gateway)
+CREATE TABLE IF NOT EXISTS addons (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    version VARCHAR(32) NOT NULL,
+    vendor VARCHAR(128) NOT NULL,
+    category VARCHAR(32) NOT NULL, -- telematik, abrechnung, sensorik, kommunikation, sonstiges
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT 1,
+    transport VARCHAR(32) NOT NULL DEFAULT 'rest_webhook', -- rest_webhook, grpc, unix_socket, wasm_sandbox
+    endpoint_url VARCHAR(255) NOT NULL,
+    auth_type VARCHAR(32) NOT NULL DEFAULT 'mtls_smcb', -- mtls_smcb, oauth2_client_credentials, api_token
+    tls_cert_path VARCHAR(255),
+    webhook_secret VARCHAR(255),
+    scopes_json TEXT NOT NULL,
+    hooks_json TEXT NOT NULL,
+    ti_profile_json TEXT,
+    last_heartbeat DATETIME,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_addons_category (category, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `,
   },
   {
@@ -883,6 +906,13 @@ pub struct UpdateUserRolePayload {
     pub actor_username: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserStatusPayload {
+    pub is_active: bool,
+    pub actor_user_id: String,
+    pub actor_username: String,
+}
+
 pub fn create_router(db_pool: DbPool) -> Router {
     Router::new()
         .route("/api/health", get(health_check))
@@ -893,6 +923,10 @@ pub fn create_router(db_pool: DbPool) -> Router {
         .route("/api/roles", get(list_role_permissions).post(create_role))
         .route("/api/roles/:role", put(update_role_permissions).delete(delete_role))
         .route("/api/users/:id/role", put(update_user_role))
+        .route("/api/users/:id/status", put(update_user_status))
+        .route("/api/addons", get(list_addons).post(register_addon))
+        .route("/api/addons/:id", put(update_addon).delete(remove_addon))
+        .route("/api/addons/:id/ti/dispatch", post(dispatch_ti_action))
         .route("/api/patients", get(list_patients))
         .route("/api/patients/:id", put(update_patient).delete(delete_patient))
         .route("/api/tours", get(list_tours))
@@ -995,7 +1029,7 @@ async fn login_local(
     let role: String = user.get("role");
     let failed_attempts: i32 = user.get("failed_login_attempts");
 
-    if !user.get::<bool, _>("is_active") || failed_attempts >= 5 {
+    if !user.get::<bool, _>("is_active") {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -1008,7 +1042,16 @@ async fn login_local(
 
     if !valid {
         let next_attempts = failed_attempts + 1;
-        let lock_account = next_attempts >= 5;
+        let is_last_active_admin = if role == "Admin" && user.get::<bool, _>("is_active") {
+            let count_row = sqlx::query("SELECT COUNT(*) AS cnt FROM users WHERE role = 'Admin' AND is_active = TRUE")
+                .fetch_one(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            count_row.get::<i64, _>("cnt") <= 1
+        } else {
+            false
+        };
+        let lock_account = next_attempts >= 5 && !is_last_active_admin;
         let _ = sqlx::query(
             "UPDATE users SET failed_login_attempts = ?, is_active = IF(?, FALSE, is_active) WHERE id = ?"
         )
@@ -1023,7 +1066,11 @@ async fn login_local(
         )
         .bind(&username)
         .bind(&role)
-        .bind(format!("Falsches Passwort ({}/5)", next_attempts))
+        .bind(if next_attempts >= 5 && is_last_active_admin {
+            format!("Falsches Passwort ({}/5) – Sperrung verhindert (letzter aktiver Admin)", next_attempts)
+        } else {
+            format!("Falsches Passwort ({}/5)", next_attempts)
+        })
         .execute(&pool)
         .await;
 
@@ -1218,9 +1265,10 @@ async fn update_user_role(
 
     let prev_role: String = target.get("role");
     let username: String = target.get("username");
+    let is_active: bool = target.get("is_active");
 
     // Letzten aktiven Administrator schützen
-    if prev_role == "Admin" && payload.role != "Admin" {
+    if is_active && prev_role == "Admin" && payload.role != "Admin" {
         let count_row = sqlx::query("SELECT COUNT(*) AS cnt FROM users WHERE role = 'Admin' AND is_active = TRUE")
             .fetch_one(&mut *tx)
             .await
@@ -1251,6 +1299,197 @@ async fn update_user_role(
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(json!({ "status": "updated", "id": user_id, "role": payload.role })))
+}
+
+async fn update_user_status(
+    State(pool): State<DbPool>,
+    Path(user_id): Path<String>,
+    Json(payload): Json<UpdateUserStatusPayload>,
+) -> Result<Json<Value>, StatusCode> {
+    // Eigenschutz: Ein angemeldeter Administrator darf sein eigenes Konto nicht selbst sperren
+    if !payload.is_active && payload.actor_user_id == user_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let target = sqlx::query("SELECT username, role, is_active FROM users WHERE id = ? FOR UPDATE")
+        .bind(&user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let role: String = target.get("role");
+    let username: String = target.get("username");
+    let currently_active: bool = target.get("is_active");
+
+    // Admin-Schutz: Der letzte aktive Administrator darf nicht gesperrt werden
+    if !payload.is_active && currently_active && role == "Admin" {
+        let count_row = sqlx::query("SELECT COUNT(*) AS cnt FROM users WHERE role = 'Admin' AND is_active = TRUE")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if count_row.get::<i64, _>("cnt") <= 1 {
+            return Err(StatusCode::CONFLICT);
+        }
+    }
+
+    sqlx::query("UPDATE users SET is_active = ?, failed_login_attempts = IF(?, 0, failed_login_attempts) WHERE id = ?")
+        .bind(payload.is_active)
+        .bind(payload.is_active)
+        .bind(&user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    sqlx::query(
+        "INSERT INTO audit_logs (username, role, action, resource, details)
+         VALUES (?, 'Admin', 'USER_STATUS_CHANGE', ?, ?)"
+    )
+    .bind(&payload.actor_username)
+    .bind(format!("Benutzer: {}", username))
+    .bind(if payload.is_active { "Benutzerkonto aktiviert" } else { "Benutzerkonto gesperrt" })
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(json!({ "status": "updated", "id": user_id, "is_active": payload.is_active })))
+}
+
+async fn list_addons(State(pool): State<DbPool>) -> Result<Json<Value>, StatusCode> {
+    let rows = sqlx::query(
+        "SELECT id, name, version, vendor, category, is_active, transport, endpoint_url, auth_type, scopes_json, ti_profile_json FROM addons ORDER BY created_at DESC"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let addons: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.get::<String, _>("id"),
+                "name": r.get::<String, _>("name"),
+                "version": r.get::<String, _>("version"),
+                "vendor": r.get::<String, _>("vendor"),
+                "category": r.get::<String, _>("category"),
+                "is_active": r.get::<bool, _>("is_active"),
+                "transport": r.get::<String, _>("transport"),
+                "endpoint_url": r.get::<String, _>("endpoint_url"),
+                "auth_type": r.get::<String, _>("auth_type"),
+                "scopes": serde_json::from_str::<Value>(&r.get::<String, _>("scopes_json")).unwrap_or_else(|_| json!([])),
+                "ti_profile": r.get::<Option<String>, _>("ti_profile_json")
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "addons": addons })))
+}
+
+async fn register_addon(
+    State(pool): State<DbPool>,
+    Json(manifest): Json<Value>,
+) -> Result<(StatusCode, Json<Value>), StatusCode> {
+    let id = manifest["id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let name = manifest["name"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let endpoint = manifest["endpointUrl"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+
+    sqlx::query(
+        "INSERT INTO addons (id, name, version, vendor, category, description, is_active, transport, endpoint_url, auth_type, scopes_json, hooks_json, ti_profile_json)
+         VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(id)
+    .bind(name)
+    .bind(manifest["version"].as_str().unwrap_or("1.0.0"))
+    .bind(manifest["anbieter"].as_str().unwrap_or("Externer Anbieter"))
+    .bind(manifest["kategorie"].as_str().unwrap_or("telematik"))
+    .bind(manifest["beschreibung"].as_str().unwrap_or(""))
+    .bind(manifest["transport"].as_str().unwrap_or("rest_webhook"))
+    .bind(endpoint)
+    .bind(manifest["authTyp"].as_str().unwrap_or("mtls_smcb"))
+    .bind(manifest["scopes"].to_string())
+    .bind(manifest["hooks"].to_string())
+    .bind(manifest.get("tiProfil").map(|p| p.to_string()))
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::CONFLICT)?;
+
+    Ok((StatusCode::CREATED, Json(json!({ "status": "installed", "id": id }))))
+}
+
+async fn update_addon(
+    State(pool): State<DbPool>,
+    Path(addon_id): Path<String>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    sqlx::query(
+        "UPDATE addons SET is_active = COALESCE(?, is_active), endpoint_url = COALESCE(?, endpoint_url), scopes_json = COALESCE(?, scopes_json), ti_profile_json = COALESCE(?, ti_profile_json) WHERE id = ?"
+    )
+    .bind(payload.get("aktiv").and_then(|v| v.as_bool()))
+    .bind(payload.get("endpointUrl").and_then(|v| v.as_str()))
+    .bind(payload.get("scopes").map(|v| v.to_string()))
+    .bind(payload.get("tiProfil").map(|v| v.to_string()))
+    .bind(&addon_id)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(json!({ "status": "updated", "id": addon_id })))
+}
+
+async fn remove_addon(
+    State(pool): State<DbPool>,
+    Path(addon_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    sqlx::query("DELETE FROM addons WHERE id = ?")
+        .bind(&addon_id)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn dispatch_ti_action(
+    State(pool): State<DbPool>,
+    Path(addon_id): Path<String>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let row = sqlx::query("SELECT name, endpoint_url, is_active, scopes_json FROM addons WHERE id = ? AND category = 'telematik'")
+        .bind(&addon_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if !row.get::<bool, _>("is_active") {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let endpoint: String = row.get("endpoint_url");
+    let addon_name: String = row.get("name");
+    let service = payload["service"].as_str().unwrap_or("KIM 1.5");
+
+    let _ = sqlx::query(
+        "INSERT INTO audit_logs (username, role, action, resource, details)
+         VALUES (?, ?, 'TI_DISPATCH', ?, ?)"
+    )
+    .bind(payload["actor_username"].as_str().unwrap_or("system"))
+    .bind(payload["actor_role"].as_str().unwrap_or("Pflegefachkraft"))
+    .bind(format!("{} via {}", service, addon_name))
+    .bind(format!("Dispatched to TI middleware endpoint {}", endpoint))
+    .execute(&pool)
+    .await;
+
+    Ok(Json(json!({
+        "status": "dispatched",
+        "addon_id": addon_id,
+        "endpoint": endpoint,
+        "service": service
+    })))
 }
 
 async fn health_check(State(pool): State<DbPool>) -> Json<Value> {
@@ -1561,6 +1800,88 @@ db-setup:
 clean:
 \tcargo clean
 \trm -rf debian/pfleged debian/.debhelper
+`,
+  },
+  {
+    path: 'src/addons/mod.rs',
+    filename: 'mod.rs',
+    category: 'Rust Core',
+    description: 'Modulares Add-on- & Telematik-Middleware-Interface (TI 2.0, KIM 1.5, ePA 3.0, VSDM, mTLS & HMAC)',
+    content: `//! PflegeRust Add-on- & Telematik-Middleware-System
+//! Ermöglicht externen TI-Middleware-Anbietern (z.B. TI-Gateway / TIaaS, KIM 1.5, ePA 3.0, VSDM)
+//! die saubere, entkoppelte Integration über HTTPS/mTLS, gRPC oder Debian systemd Unix-Sockets.
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AddonError {
+    #[error("Add-on ist deaktiviert oder nicht registriert: {0}")]
+    Unavailable(String),
+    #[error("Fehlende Scope-Berechtigung: {0}")]
+    MissingScope(String),
+    #[error("TI-Middleware Transportfehler: {0}")]
+    Transport(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TiMiddlewareProfile {
+    pub telematik_id: String,
+    pub mandant_id: String,
+    pub client_system_id: String,
+    pub workplace_id: String,
+    pub kim_address: String,
+    pub connector_type: String,
+    pub supported_services: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddonManifest {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub vendor: String,
+    pub category: String,
+    pub transport: String,
+    pub endpoint_url: String,
+    pub auth_type: String,
+    pub tls_cert_path: Option<String>,
+    pub scopes: Vec<String>,
+    pub hooks: Vec<String>,
+    pub ti_profile: Option<TiMiddlewareProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KimSendRequest {
+    pub recipient_kim: String,
+    pub document_type: String,
+    pub patient_insurance_number: String,
+    pub fhir_bundle_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TiDispatchReceipt {
+    pub reference_id: String,
+    pub service: String,
+    pub status: String,
+    pub latency_ms: u64,
+}
+
+/// Einheitliches Interface für zertifizierte deutsche TI-Middleware-Adapter
+#[async_trait::async_trait]
+pub trait TelematikAddon: Send + Sync {
+    fn manifest(&self) -> &AddonManifest;
+
+    fn require_scope(&self, scope: &str) -> Result<(), AddonError> {
+        if self.manifest().scopes.iter().any(|s| s == scope) {
+            Ok(())
+        } else {
+            Err(AddonError::MissingScope(scope.to_string()))
+        }
+    }
+
+    async fn send_kim_document(&self, req: KimSendRequest) -> Result<TiDispatchReceipt, AddonError>;
+}
 `,
   },
 ];

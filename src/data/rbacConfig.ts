@@ -104,6 +104,18 @@ export const ALLE_BERECHTIGUNGEN: BerechtigungMeta[] = [
     beschreibung: 'Lückenloses Zugriffs- und Sicherheitsprotokoll (BSI) prüfen',
   },
   {
+    id: 'addons_verwalten',
+    label: 'Add-ons & TI-Middleware verwalten',
+    gruppe: 'Administration & Technik',
+    beschreibung: 'Externe Add-ons und TI-Middleware-Anbieter installieren, konfigurieren & aktivieren',
+  },
+  {
+    id: 'telematik_nutzen',
+    label: 'Telematik-Dienste (KIM, ePA, VSDM) nutzen',
+    gruppe: 'Pflege & Klienten',
+    beschreibung: 'KIM-Nachrichten senden, ePA 3.0 synchronisieren und VSDM über aktive TI-Add-ons nutzen',
+  },
+  {
     id: 'system_technik',
     label: 'MariaDB, Rust-Code & Debian CLI',
     gruppe: 'Administration & Technik',
@@ -166,6 +178,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<string, RollenDefinition> = {
       'dienstplan',
       'abrechnung',
       'migration',
+      'telematik_nutzen',
     ],
     istStandard: true,
   },
@@ -185,6 +198,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<string, RollenDefinition> = {
       'medikation_bearbeiten',
       'pflege_dokumentieren',
       'dienstplan',
+      'telematik_nutzen',
     ],
     istStandard: true,
   },
@@ -202,6 +216,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<string, RollenDefinition> = {
       'medikation_lesen',
       'medikation_bearbeiten',
       'pflege_dokumentieren',
+      'telematik_nutzen',
     ],
     istStandard: true,
   },
@@ -278,6 +293,8 @@ export function canAccessTab(
       return check('abrechnung');
     case 'users':
       return check('users_verwalten') || check('audit_lesen');
+    case 'addons':
+      return check('addons_verwalten') || check('telematik_nutzen');
     case 'migration':
       return check('migration');
     case 'rust':
@@ -297,6 +314,7 @@ export const ORDERED_TABS = [
   'medikation',
   'dienstplan',
   'abrechnung',
+  'addons',
   'users',
   'migration',
   'rust',

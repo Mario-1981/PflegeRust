@@ -190,15 +190,27 @@ export const LoginView: React.FC<LoginViewProps> = ({
       if (!isValid) {
         const nextAttempts = (found.fehlversuche || 0) + 1;
         const remaining = Math.max(0, MAX_LOGIN_ATTEMPTS - nextAttempts);
+        const isLastActiveAdmin =
+          found.aktiv &&
+          found.rolle === 'Admin' &&
+          benutzer.filter((u) => u.aktiv && u.rolle === 'Admin').length <= 1;
         onFailedLogin(trimmed, found, mode === 'sso');
         setPassword('');
         if (remaining === 0) {
-          setErrorMsg(
-            `Maximale Anzahl an Fehlversuchen (${MAX_LOGIN_ATTEMPTS}) erreicht. Das Konto wurde aus Sicherheitsgründen gesperrt und im DSGVO-Audit-Log vermerkt.`
-          );
+          if (isLastActiveAdmin) {
+            setErrorMsg(
+              `Falsches Passwort (${nextAttempts} Fehlversuche). Der letzte aktive Administrator kann nicht gesperrt werden – der Vorfall wurde im DSGVO-Audit-Log protokolliert.`
+            );
+          } else {
+            setErrorMsg(
+              `Maximale Anzahl an Fehlversuchen (${MAX_LOGIN_ATTEMPTS}) erreicht. Das Konto wurde aus Sicherheitsgründen gesperrt und im DSGVO-Audit-Log vermerkt.`
+            );
+          }
         } else {
           setErrorMsg(
-            `Falsches Passwort. Verbleibende Versuche vor automatischer Kontosperrung: ${remaining}.`
+            isLastActiveAdmin
+              ? `Falsches Passwort (Fehlversuch ${nextAttempts}). Der Vorfall wurde im DSGVO-Audit-Log protokolliert.`
+              : `Falsches Passwort. Verbleibende Versuche vor automatischer Kontosperrung: ${remaining}.`
           );
         }
         return;

@@ -71,11 +71,14 @@ export const Header: React.FC<HeaderProps> = ({
   const canUsersTab = canTab('users');
   const canManageUsers = hasPermission(activeUser.role, 'users_verwalten', rollenConfig);
 
+  const canManageAddons = hasPermission(activeUser.role, 'addons_verwalten', rollenConfig);
+
   const navLinks = [
     { id: 'dashboard', label: 'Übersicht' },
     { id: 'klienten', label: `Klienten (${clientCount})` },
     { id: 'touren', label: 'Tourenplanung' },
     { id: 'sis', label: 'SIS & Doku' },
+    { id: 'addons', label: canManageAddons ? 'Add-ons & TI' : 'Telematik (TI)' },
     { id: 'users', label: canManageUsers ? 'Nutzer & Rollen' : 'Audit-Log' },
     { id: 'migration', label: 'SNAP-Migration' },
     { id: 'rust', label: 'Rust & MariaDB Code' },

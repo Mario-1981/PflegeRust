@@ -39,6 +39,7 @@ import {
 
 interface UserManagementViewProps {
   benutzer: AppBenutzer[];
+  activeUserId: string;
   rollenConfig: Record<BenutzerRolle, RollenDefinition>;
   ssoConfig: SsoKonfiguration;
   auditLogs: AuditLogEintrag[];
@@ -62,6 +63,7 @@ interface UserManagementViewProps {
 
 export const UserManagementView: React.FC<UserManagementViewProps> = ({
   benutzer,
+  activeUserId,
   rollenConfig,
   ssoConfig,
   auditLogs,
@@ -78,6 +80,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   onResetUserPassword,
 }) => {
   const roleKeys = Object.keys(rollenConfig);
+  const activeAdminCount = benutzer.filter((u) => u.aktiv && u.rolle === 'Admin').length;
   const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'sso' | 'audit'>(
     canManageUsers ? 'users' : 'audit'
   );
@@ -450,6 +453,13 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
             </div>
           </div>
 
+          <div className="bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-2.5 text-[11px] text-slate-600 flex items-center gap-2">
+            <Lock className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+            <span>
+              <strong>Admin-Aussperrschutz aktiv:</strong> Ein angemeldeter Administrator kann sich nicht selbst sperren, und der letzte aktive Administrator kann weder gesperrt noch herabgestuft werden ({activeAdminCount} {activeAdminCount === 1 ? 'aktiver Admin' : 'aktive Admins'}).
+            </span>
+          </div>
+
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
@@ -465,99 +475,141 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="p-3">
-                      <div className="font-bold text-slate-900">
-                        {user.name}, {user.vorname}
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-mono">ID: {user.id}</div>
-                    </td>
-                    <td className="p-3">
-                      <div className="font-mono font-medium text-slate-800">{user.benutzername}</div>
-                      <div className="text-[11px] text-slate-500">{user.email}</div>
-                    </td>
-                    <td className="p-3">
-                      <select
-                        aria-label={`Rolle für ${user.vorname} ${user.name}`}
-                        value={user.rolle}
-                        onChange={(e) =>
-                          onUpdateUserRole(user.id, e.target.value as BenutzerRolle)
-                        }
-                        className={`px-2 py-1 rounded text-[11px] font-medium border cursor-pointer focus:outline-none focus:ring-1 focus:ring-teal-700 ${getRoleBadge(
-                          user.rolle
-                        )}`}
-                      >
-                        {roleKeys.map((r) => (
-                          <option key={r} value={r} className="bg-white text-slate-900">
-                            {rollenConfig[r]?.bezeichnung || r}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="p-3">
-                      <span className="inline-flex items-center gap-1 text-[11px] text-slate-700">
-                        <KeyRound className="w-3 h-3 text-teal-700" />
-                        <span>{getAuthBadge(user.authMethode)}</span>
-                      </span>
-                      {user.ssoSubjectId && (
-                        <div className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]">
-                          {user.ssoSubjectId}
+                {filteredUsers.map((user) => {
+                  const isSelf = user.id === activeUserId;
+                  const isLastActiveAdmin =
+                    user.aktiv && user.rolle === 'Admin' && activeAdminCount <= 1;
+                  const lockBlockedReason = !user.aktiv
+                    ? null
+                    : isSelf
+                    ? 'Eigenschutz: Ein angemeldeter Administrator kann sich nicht selbst sperren.'
+                    : isLastActiveAdmin
+                    ? 'Admin-Schutz: Der letzte aktive Administrator kann nicht gesperrt werden.'
+                    : null;
+
+                  return (
+                    <tr key={user.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="p-3">
+                        <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                          <span>
+                            {user.name}, {user.vorname}
+                          </span>
+                          {isSelf && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-50 text-teal-800 border border-teal-200">
+                              Aktuelle Sitzung
+                            </span>
+                          )}
+                          {isLastActiveAdmin && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-50 text-purple-800 border border-purple-200">
+                              Letzter Admin
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </td>
-                    <td className="p-3 text-slate-600">{user.abteilung}</td>
-                    <td className="p-3">
-                      <div className="space-y-1">
-                        {user.aktiv ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                            Aktiv
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-rose-50 text-rose-700 border border-rose-200">
-                            <UserX className="w-3 h-3 text-rose-600" />
-                            Gesperrt
-                          </span>
-                        )}
-                        {(user.fehlversuche || 0) > 0 && (
-                          <div className="text-[10px] font-mono text-amber-700">
-                            Fehlversuche: {user.fehlversuche}/{MAX_LOGIN_ATTEMPTS}
+                        <div className="text-[11px] text-slate-500 font-mono">ID: {user.id}</div>
+                      </td>
+                      <td className="p-3">
+                        <div className="font-mono font-medium text-slate-800">{user.benutzername}</div>
+                        <div className="text-[11px] text-slate-500">{user.email}</div>
+                      </td>
+                      <td className="p-3">
+                        <select
+                          aria-label={`Rolle für ${user.vorname} ${user.name}`}
+                          value={user.rolle}
+                          disabled={isLastActiveAdmin}
+                          title={
+                            isLastActiveAdmin
+                              ? 'Der letzte aktive Administrator kann nicht auf eine andere Rolle herabgestuft werden.'
+                              : undefined
+                          }
+                          onChange={(e) =>
+                            onUpdateUserRole(user.id, e.target.value as BenutzerRolle)
+                          }
+                          className={`px-2 py-1 rounded text-[11px] font-medium border focus:outline-none focus:ring-1 focus:ring-teal-700 ${getRoleBadge(
+                            user.rolle
+                          )} ${isLastActiveAdmin ? 'opacity-80 cursor-not-allowed' : 'cursor-pointer'}`}
+                        >
+                          {roleKeys.map((r) => (
+                            <option key={r} value={r} className="bg-white text-slate-900">
+                              {rollenConfig[r]?.bezeichnung || r}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="p-3">
+                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-700">
+                          <KeyRound className="w-3 h-3 text-teal-700" />
+                          <span>{getAuthBadge(user.authMethode)}</span>
+                        </span>
+                        {user.ssoSubjectId && (
+                          <div className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]">
+                            {user.ssoSubjectId}
                           </div>
                         )}
-                      </div>
-                    </td>
-                    <td className="p-3 text-slate-600 font-mono text-[11px]">
-                      {user.letzterLogin}
-                    </td>
-                    <td className="p-3 text-right whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setResetTargetUser(user);
-                          setResetPassword('');
-                          setResetPasswordConfirm('');
-                          setResetForceChange(true);
-                          setResetError(null);
-                        }}
-                        className="text-[11px] font-medium px-2 py-1 rounded text-teal-800 hover:bg-teal-50 transition-colors cursor-pointer mr-1"
-                      >
-                        Passwort
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onToggleUserStatus(user.id)}
-                        className={`text-[11px] font-medium px-2 py-1 rounded transition-colors cursor-pointer ${
-                          user.aktiv
-                            ? 'text-rose-700 hover:bg-rose-50'
-                            : 'text-emerald-700 hover:bg-emerald-50'
-                        }`}
-                      >
-                        {user.aktiv ? 'Sperren' : 'Aktivieren'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="p-3 text-slate-600">{user.abteilung}</td>
+                      <td className="p-3">
+                        <div className="space-y-1">
+                          {user.aktiv ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              Aktiv
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-rose-50 text-rose-700 border border-rose-200">
+                              <UserX className="w-3 h-3 text-rose-600" />
+                              Gesperrt
+                            </span>
+                          )}
+                          {(user.fehlversuche || 0) > 0 && (
+                            <div className="text-[10px] font-mono text-amber-700">
+                              Fehlversuche: {user.fehlversuche}/{MAX_LOGIN_ATTEMPTS}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3 text-slate-600 font-mono text-[11px]">
+                        {user.letzterLogin}
+                      </td>
+                      <td className="p-3 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setResetTargetUser(user);
+                            setResetPassword('');
+                            setResetPasswordConfirm('');
+                            setResetForceChange(true);
+                            setResetError(null);
+                          }}
+                          className="text-[11px] font-medium px-2 py-1 rounded text-teal-800 hover:bg-teal-50 transition-colors cursor-pointer mr-1"
+                        >
+                          Passwort
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(lockBlockedReason)}
+                          title={lockBlockedReason || undefined}
+                          onClick={() => onToggleUserStatus(user.id)}
+                          className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded transition-colors ${
+                            lockBlockedReason
+                              ? 'text-slate-400 bg-slate-100 cursor-not-allowed'
+                              : user.aktiv
+                              ? 'text-rose-700 hover:bg-rose-50 cursor-pointer'
+                              : 'text-emerald-700 hover:bg-emerald-50 cursor-pointer'
+                          }`}
+                        >
+                          {lockBlockedReason && <Lock className="w-3 h-3 shrink-0" />}
+                          <span>
+                            {lockBlockedReason
+                              ? 'Geschützt'
+                              : user.aktiv
+                              ? 'Sperren'
+                              : 'Aktivieren'}
+                          </span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1201,8 +1253,13 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                             log.aktion === 'ROLE_CHANGE' ||
                             log.aktion === 'ROLE_CONFIG_CHANGE' ||
                             log.aktion === 'ROLE_CREATE' ||
-                            log.aktion === 'ROLE_DELETE'
+                            log.aktion === 'ROLE_DELETE' ||
+                            log.aktion === 'ADDON_INSTALL' ||
+                            log.aktion === 'ADDON_UPDATE' ||
+                            log.aktion === 'ADDON_REMOVE'
                           ? 'text-purple-800'
+                          : log.aktion === 'TI_DISPATCH'
+                          ? 'text-cyan-800'
                           : log.aktion === 'PASSWORD_CHANGE'
                           ? 'text-amber-700'
                           : log.aktion === 'LOGOUT'

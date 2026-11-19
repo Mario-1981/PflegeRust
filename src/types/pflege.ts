@@ -185,6 +185,8 @@ export type Berechtigung =
   | 'users_verwalten'
   | 'audit_lesen'
   | 'migration'
+  | 'addons_verwalten'
+  | 'telematik_nutzen'
   | 'system_technik';
 
 export interface RollenDefinition {
@@ -265,6 +267,10 @@ export interface AuditLogEintrag {
     | 'ROLE_CONFIG_CHANGE'
     | 'ROLE_CREATE'
     | 'ROLE_DELETE'
+    | 'ADDON_INSTALL'
+    | 'ADDON_UPDATE'
+    | 'ADDON_REMOVE'
+    | 'TI_DISPATCH'
     | 'PATIENT_READ'
     | 'PATIENT_UPDATE'
     | 'MED_DISPENSE'
@@ -273,6 +279,93 @@ export interface AuditLogEintrag {
   ressource: string;
   details: string;
   ipAdresse: string;
+}
+
+export type AddonKategorie =
+  | 'telematik'
+  | 'abrechnung'
+  | 'sensorik'
+  | 'kommunikation'
+  | 'sonstiges';
+
+export type AddonTransport =
+  | 'rest_webhook'
+  | 'grpc'
+  | 'unix_socket'
+  | 'wasm_sandbox';
+
+export type AddonAuthTyp =
+  | 'mtls_smcb'
+  | 'oauth2_client_credentials'
+  | 'api_token';
+
+export type TiDienst =
+  | 'KIM 1.5'
+  | 'ePA 3.0'
+  | 'TI-Messenger'
+  | 'eVO / HKP'
+  | 'VSDM'
+  | 'QES / SMC-B';
+
+export type AddonScope =
+  | 'klienten:read'
+  | 'klienten:write'
+  | 'medikation:read'
+  | 'medikation:write'
+  | 'sis:read'
+  | 'kim:send'
+  | 'kim:receive'
+  | 'epa:read'
+  | 'epa:write'
+  | 'vsdm:verify'
+  | 'abrechnung:export';
+
+export interface TiMiddlewareProfil {
+  telematikId: string;
+  mandantId: string;
+  clientSystemId: string;
+  workplaceId: string;
+  kimAdresse: string;
+  gematikZulassung: string;
+  konnektorTyp: 'TI-Gateway (TIaaS)' | 'Highspeed-Konnektor (PTV5+)' | 'Lokaler Konnektor';
+  smcbStatus: 'aktiv' | 'pin_erforderlich' | 'abgelaufen';
+  unterstuetzteDienste: TiDienst[];
+}
+
+export interface PflegeAddon {
+  id: string;
+  name: string;
+  version: string;
+  anbieter: string;
+  kategorie: AddonKategorie;
+  beschreibung: string;
+  aktiv: boolean;
+  status: 'verbunden' | 'inaktiv' | 'fehler';
+  transport: AddonTransport;
+  endpointUrl: string;
+  authTyp: AddonAuthTyp;
+  tlsZertifikatPfad?: string;
+  webhookSecret?: string;
+  scopes: AddonScope[];
+  hooks: string[];
+  tiProfil?: TiMiddlewareProfil;
+  letzterHeartbeat: string;
+  latenzMs?: number;
+  installiertAm: string;
+}
+
+export interface TiTransaktion {
+  id: string;
+  zeitstempel: string;
+  addonId: string;
+  addonName: string;
+  dienst: 'KIM 1.5' | 'ePA 3.0' | 'VSDM';
+  klientName: string;
+  empfaengerOderZiel: string;
+  dokumentTyp: string;
+  status: 'zugestellt' | 'verifiziert' | 'fehler';
+  referenzId: string;
+  latenzMs: number;
 }
 
 

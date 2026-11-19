@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   LogOut,
   ArrowLeftRight,
+  Plug,
 } from 'lucide-react';
 import {
   ActiveSessionUser,
@@ -30,6 +31,7 @@ interface SidebarProps {
   clientCount: number;
   tourCount: number;
   userCount: number;
+  activeAddonCount: number;
   einrichtung: EinrichtungsProfil;
   rollenConfig: Record<BenutzerRolle, RollenDefinition>;
   onOpenMariaDbModal: () => void;
@@ -44,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   clientCount,
   tourCount,
   userCount,
+  activeAddonCount,
   einrichtung,
   rollenConfig,
   onOpenMariaDbModal,
@@ -53,6 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const canTab = (tabId: string) => canAccessTab(activeUser.role, tabId, rollenConfig);
   const canManageUsers = hasPermission(activeUser.role, 'users_verwalten', rollenConfig);
+  const canManageAddons = hasPermission(activeUser.role, 'addons_verwalten', rollenConfig);
   const canSystem = hasPermission(activeUser.role, 'system_technik', rollenConfig);
 
   const pflegeNavItems = [
@@ -63,6 +67,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'medikation', label: 'Medikation & HKP', icon: Pill },
     { id: 'dienstplan', label: 'Dienstplan & Personal', icon: CalendarCheck },
     { id: 'abrechnung', label: 'Abrechnung SGB XI / V', icon: ReceiptText },
+    {
+      id: 'addons',
+      label: canManageAddons ? 'Add-ons & Telematik (TI)' : 'Telematik (TI)',
+      icon: Plug,
+      count: activeAddonCount,
+    },
     {
       id: 'users',
       label: canManageUsers ? 'Nutzer, Rollen & SSO' : 'DSGVO Audit-Log',

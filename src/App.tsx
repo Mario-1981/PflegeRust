@@ -15,6 +15,7 @@ import { MedikationView } from './components/MedikationView';
 import { DienstplanView } from './components/DienstplanView';
 import { AbrechnungView } from './components/AbrechnungView';
 import { UserManagementView } from './components/UserManagementView';
+import { AddonsView } from './components/AddonsView';
 import { MigrationView } from './components/MigrationView';
 import { RustCodeView } from './components/RustCodeView';
 import { DebianTerminalView } from './components/DebianTerminalView';
@@ -32,6 +33,7 @@ import {
   getFirstAllowedTab,
   isStandardRolle,
 } from './data/rbacConfig';
+import { INITIAL_ADDONS, INITIAL_TI_TRANSAKTIONEN } from './data/addonsData';
 
 import {
   INITIAL_KLIENTEN,
@@ -54,6 +56,8 @@ import {
   AuditLogEintrag,
   ActiveSessionUser,
   EinrichtungsProfil,
+  PflegeAddon,
+  TiTransaktion,
 } from './types/pflege';
 
 export default function App() {
@@ -73,6 +77,8 @@ export default function App() {
   const [rollenConfig, setRollenConfig] = useState<Record<BenutzerRolle, RollenDefinition>>(
     INITIAL_ROLLEN_CONFIG
   );
+  const [addons, setAddons] = useState<PflegeAddon[]>(INITIAL_ADDONS);
+  const [tiTransaktionen, setTiTransaktionen] = useState<TiTransaktion[]>(INITIAL_TI_TRANSAKTIONEN);
   const [ssoConfig, setSsoConfig] = useState<SsoKonfiguration>(INITIAL_SSO_CONFIG);
   const [auditLogs, setAuditLogs] = useState<AuditLogEintrag[]>([]);
   const [activeUser, setActiveUser] = useState<ActiveSessionUser | null>(null);
@@ -372,11 +378,21 @@ export default function App() {
     const target = benutzer.find((u) => u.id === userId);
     if (!target) return;
 
+    // Protect an administrator / active user from locking their own account
+    if (target.aktiv && activeUser && target.id === activeUser.id) {
+      showToast(
+        target.rolle === 'Admin'
+          ? 'Schutz aktiv: Ein Administrator kann sich nicht selbst sperren.'
+          : 'Schutz aktiv: Sie können Ihr eigenes Benutzerkonto nicht selbst sperren.'
+      );
+      return;
+    }
+
     // Protect the last active Admin from being locked
     if (target.aktiv && target.rolle === 'Admin') {
       const activeAdmins = benutzer.filter((u) => u.aktiv && u.rolle === 'Admin');
       if (activeAdmins.length <= 1) {
-        showToast('Der letzte aktive Administrator kann nicht gesperrt werden.');
+        showToast('Schutz aktiv: Der letzte aktive Administrator kann nicht gesperrt werden.');
         return;
       }
     }
@@ -415,10 +431,10 @@ export default function App() {
     if (!target || target.rolle === newRole) return;
 
     // Protect the last active Admin from being demoted
-    if (target.rolle === 'Admin' && newRole !== 'Admin') {
+    if (target.aktiv && target.rolle === 'Admin' && newRole !== 'Admin') {
       const activeAdmins = benutzer.filter((u) => u.aktiv && u.rolle === 'Admin');
       if (activeAdmins.length <= 1) {
-        showToast('Der letzte aktive Administrator kann nicht auf eine andere Rolle herabgestuft werden.');
+        showToast('Schutz aktiv: Der letzte aktive Administrator kann nicht auf eine andere Rolle herabgestuft werden.');
         return;
       }
     }
@@ -573,6 +589,127 @@ export default function App() {
     return true;
   };
 
+  // Add-on & German Telematik (TI) Middleware handlers
+  const handleToggleAddon = (addonId: string) => {
+    if (!can('addons_verwalten')) {
+      showToast('Keine Berechtigung zum Verwalten von Add-ons.');
+      return;
+    }
+    const target = addons.find((a) => a.id === addonId);
+    if (!target) return;
+    const nextActive = !target.aktiv;
+    const nowStamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    setAddons((prev) =>
+      prev.map((a) =>
+        a.id === addonId
+          ? {
+              ...a,
+              aktiv: nextActive,
+              status: nextActive ? 'verbunden' : 'inaktiv',
+              letzterHeartbeat: nextActive ? nowStamp : 'Deaktiviert',
+              latenzMs: nextActive ? a.latenzMs || 34 : undefined,
+            }
+          : a
+      )
+    );
+    addAuditLog(
+      'ADDON_UPDATE',
+      `Add-on: ${target.name}`,
+      nextActive ? 'Add-on aktiviert & Verbindung hergestellt' : 'Add-on deaktiviert'
+    );
+    showToast(`Add-on „${target.name}“ wurde ${nextActive ? 'aktiviert' : 'deaktiviert'}.`);
+  };
+
+  const handleUpdateAddon = (updated: PflegeAddon) => {
+    if (!can('addons_verwalten')) {
+      showToast('Keine Berechtigung zum Konfigurieren von Add-ons.');
+      return;
+    }
+    setAddons((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+    addAuditLog(
+      'ADDON_UPDATE',
+      `Add-on: ${updated.name}`,
+      `Konfiguration aktualisiert (${updated.endpointUrl} · ${updated.scopes.length} Scopes)`
+    );
+    showToast(`Konfiguration für „${updated.name}“ in MariaDB gespeichert.`);
+  };
+
+  const handleInstallAddon = (addon: PflegeAddon): boolean => {
+    if (!can('addons_verwalten')) {
+      showToast('Keine Berechtigung zum Installieren von Add-ons.');
+      return false;
+    }
+    if (addons.some((a) => a.id === addon.id)) {
+      showToast(`Ein Add-on mit der ID „${addon.id}“ ist bereits installiert.`);
+      return false;
+    }
+    setAddons((prev) => [addon, ...prev]);
+    addAuditLog(
+      'ADDON_INSTALL',
+      `Add-on: ${addon.name} (${addon.id})`,
+      `Anbieter: ${addon.anbieter} · Kategorie: ${addon.kategorie} · Endpoint: ${addon.endpointUrl}`
+    );
+    showToast(`Add-on „${addon.name}“ erfolgreich registriert und aktiviert.`);
+    return true;
+  };
+
+  const handleRemoveAddon = (addonId: string) => {
+    if (!can('addons_verwalten')) {
+      showToast('Keine Berechtigung zum Entfernen von Add-ons.');
+      return;
+    }
+    const target = addons.find((a) => a.id === addonId);
+    if (!target) return;
+    setAddons((prev) => prev.filter((a) => a.id !== addonId));
+    addAuditLog(
+      'ADDON_REMOVE',
+      `Add-on: ${target.name} (${target.id})`,
+      'Add-on und registrierte Hooks aus dem System entfernt'
+    );
+    showToast(`Add-on „${target.name}“ wurde deinstalliert.`);
+  };
+
+  const handleTestAddonHealth = (addonId: string) => {
+    if (!can('addons_verwalten')) return;
+    const target = addons.find((a) => a.id === addonId);
+    if (!target || !target.aktiv) return;
+    const nowStamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const latency = Math.floor(16 + Math.random() * 44);
+    setAddons((prev) =>
+      prev.map((a) =>
+        a.id === addonId
+          ? {
+              ...a,
+              status: 'verbunden',
+              letzterHeartbeat: nowStamp,
+              latenzMs: latency,
+            }
+          : a
+      )
+    );
+    showToast(`Healthcheck erfolgreich: ${target.name} antwortet in ${latency} ms.`);
+  };
+
+  const handleDispatchTiAction = (tx: Omit<TiTransaktion, 'id' | 'zeitstempel'>) => {
+    if (!can('telematik_nutzen')) {
+      showToast('Keine Berechtigung zur Nutzung von Telematik-Diensten.');
+      return;
+    }
+    const nowStamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const entry: TiTransaktion = {
+      ...tx,
+      id: `ti-tx-${Date.now()}`,
+      zeitstempel: nowStamp,
+    };
+    setTiTransaktionen((prev) => [entry, ...prev]);
+    addAuditLog(
+      'TI_DISPATCH',
+      `${tx.dienst} via ${tx.addonName}`,
+      `${tx.dokumentTyp} für ${tx.klientName} → ${tx.empfaengerOderZiel} (Ref: ${tx.referenzId})`
+    );
+    showToast(`${tx.dienst} über ${tx.addonName} erfolgreich ausgeführt (${tx.referenzId}).`);
+  };
+
   const handleResetUserPassword = (
     userId: string,
     salt: string,
@@ -674,7 +811,12 @@ export default function App() {
   ) => {
     if (matchedUser) {
       const nextAttempts = (matchedUser.fehlversuche || 0) + 1;
-      const shouldLock = nextAttempts >= MAX_LOGIN_ATTEMPTS;
+      const isLastActiveAdmin =
+        matchedUser.aktiv &&
+        matchedUser.rolle === 'Admin' &&
+        benutzer.filter((u) => u.aktiv && u.rolle === 'Admin').length <= 1;
+      const shouldLock = nextAttempts >= MAX_LOGIN_ATTEMPTS && !isLastActiveAdmin;
+
       setBenutzer((prev) =>
         prev.map((u) =>
           u.id === matchedUser.id
@@ -691,6 +833,8 @@ export default function App() {
         viaSso ? 'SSO Identity Provider' : 'MariaDB Auth',
         shouldLock
           ? `Fehlgeschlagener Login (${nextAttempts}/${MAX_LOGIN_ATTEMPTS}) – Konto automatisch gesperrt`
+          : nextAttempts >= MAX_LOGIN_ATTEMPTS && isLastActiveAdmin
+          ? `Fehlgeschlagener Login (${nextAttempts}/${MAX_LOGIN_ATTEMPTS}) – Automatische Sperrung verhindert (letzter aktiver Administrator)`
           : `Fehlgeschlagener Login-Versuch (${nextAttempts}/${MAX_LOGIN_ATTEMPTS})`,
         { benutzer: matchedUser.benutzername, rolle: matchedUser.rolle }
       );
@@ -928,6 +1072,7 @@ export default function App() {
           clientCount={klienten.length}
           tourCount={touren.length}
           userCount={benutzer.length}
+          activeAddonCount={addons.filter((a) => a.aktiv).length}
           einrichtung={einrichtung}
           rollenConfig={rollenConfig}
           onOpenMariaDbModal={() => {
@@ -1042,9 +1187,26 @@ export default function App() {
               <AbrechnungView klienten={klienten} />
             )}
 
+            {hasEffectiveTabAccess && effectiveTab === 'addons' && (
+              <AddonsView
+                addons={addons}
+                klienten={klienten}
+                tiTransaktionen={tiTransaktionen}
+                canManageAddons={can('addons_verwalten')}
+                canUseTelematik={can('telematik_nutzen')}
+                onToggleAddon={handleToggleAddon}
+                onUpdateAddon={handleUpdateAddon}
+                onInstallAddon={handleInstallAddon}
+                onRemoveAddon={handleRemoveAddon}
+                onTestAddonHealth={handleTestAddonHealth}
+                onDispatchTiAction={handleDispatchTiAction}
+              />
+            )}
+
             {hasEffectiveTabAccess && effectiveTab === 'users' && (
               <UserManagementView
                 benutzer={benutzer}
+                activeUserId={activeUser.id}
                 rollenConfig={rollenConfig}
                 ssoConfig={ssoConfig}
                 auditLogs={auditLogs}
