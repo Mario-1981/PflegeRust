@@ -52,7 +52,7 @@ export const AbrechnungView: React.FC<AbrechnungViewProps> = ({ klienten }) => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
@@ -122,7 +122,8 @@ export const AbrechnungView: React.FC<AbrechnungViewProps> = ({ klienten }) => {
         <div className="p-4 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-800">
           Aufschlüsselung nach Krankenkassen &amp; Kostenträgern
         </div>
-        <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-left text-xs">
           <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
             <tr>
               <th className="p-3">Kostenträger</th>
@@ -157,6 +158,7 @@ export const AbrechnungView: React.FC<AbrechnungViewProps> = ({ klienten }) => {
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Leistungskomplexe Katalog */}
@@ -164,7 +166,8 @@ export const AbrechnungView: React.FC<AbrechnungViewProps> = ({ klienten }) => {
         <div className="p-4 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-800">
           Gültiger Leistungskomplex-Katalog (Berlin / Rahmenvertrag § 89 SGB XI)
         </div>
-        <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[600px] text-left text-xs">
           <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
             <tr>
               <th className="p-2.5 font-mono">Code</th>
@@ -190,6 +193,7 @@ export const AbrechnungView: React.FC<AbrechnungViewProps> = ({ klienten }) => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

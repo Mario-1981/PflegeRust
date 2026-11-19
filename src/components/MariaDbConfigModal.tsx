@@ -79,8 +79,8 @@ export const MariaDbConfigModal: React.FC<MariaDbConfigModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-2xl border border-slate-200 max-w-xl w-full p-5 space-y-4 text-xs">
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-white rounded-lg shadow-2xl border border-slate-200 max-w-xl w-full max-h-[90dvh] overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
         {/* Header */}
         <div className="flex justify-between items-center pb-2.5 border-b border-slate-200">
           <div className="flex items-center gap-2">
@@ -135,8 +135,8 @@ export const MariaDbConfigModal: React.FC<MariaDbConfigModalProps> = ({
         )}
 
         <form onSubmit={handleSave} className="space-y-3.5">
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
               <label className="text-slate-700 font-medium block mb-1">
                 MariaDB Host / Socket *
               </label>
@@ -160,7 +160,7 @@ export const MariaDbConfigModal: React.FC<MariaDbConfigModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-slate-700 font-medium block mb-1">Datenbankname *</label>
               <input
@@ -192,7 +192,7 @@ export const MariaDbConfigModal: React.FC<MariaDbConfigModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 pt-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
               <label className="text-slate-700 font-medium block">
                 Connection Pool Größe: <span className="font-mono text-teal-800">{poolSize}</span>
@@ -237,7 +237,7 @@ export const MariaDbConfigModal: React.FC<MariaDbConfigModalProps> = ({
             DSN: mysql://{user}:*****@{host}:{port}/{database}?ssl-mode={ssl ? 'REQUIRED' : 'PREFERRED'}
           </div>
 
-          <div className="flex justify-between items-center pt-3 border-t border-slate-200">
+          <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t border-slate-200">
             <button
               type="button"
               onClick={handleTestConnection}

@@ -35,6 +35,8 @@ import {
   verifyTotpCode,
   verifyWebAuthnAssertion,
 } from '../utils/mfaCrypto';
+import { PWAInstallButton } from './PWAInstallButton';
+import { OfflineIndicator } from './OfflineIndicator';
 
 interface LoginViewProps {
   benutzer: AppBenutzer[];
@@ -501,25 +503,26 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const isInSecondaryFlow = Boolean(pendingPasswordChangeUser || pendingMfaUser);
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col justify-between">
+    <div className="min-h-[100dvh] bg-slate-100 text-slate-900 flex flex-col justify-between">
       {/* Top Bar */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center font-bold text-sm tracking-tight shadow-xs">
+      <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 safe-top flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center font-bold text-sm tracking-tight shadow-xs shrink-0">
             PR
           </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-bold tracking-tight text-slate-900 leading-none">
+          <div className="flex flex-col min-w-0">
+            <span className="text-base sm:text-lg font-bold tracking-tight text-slate-900 leading-none truncate">
               PflegeRust
             </span>
-            <span className="text-[10px] text-teal-700 font-mono font-medium mt-0.5">
-              Pflegemanagement · MariaDB, 2FA &amp; Passkeys
+            <span className="text-[10px] text-teal-700 font-mono font-medium mt-0.5 truncate">
+              Pflegemanagement · 2FA &amp; Passkeys
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 text-xs text-slate-500 font-mono">
-          <span className="hidden sm:inline-flex items-center gap-1.5 text-slate-600">
+        <div className="flex items-center gap-2 sm:gap-3 text-xs text-slate-500 font-mono shrink-0">
+          <PWAInstallButton variant="header" />
+          <span className="hidden md:inline-flex items-center gap-1.5 text-slate-600">
             <Database className="w-3.5 h-3.5 text-teal-700" />
             <span>MariaDB 10.11 · Debian 12</span>
           </span>
@@ -527,7 +530,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
       </header>
 
       {/* Centered Secure Login / Active Session Switcher */}
-      <main className="flex-1 flex items-center justify-center p-6">
+      <main className="flex-1 flex items-center justify-center p-3 sm:p-6 safe-x">
         <div className="w-full max-w-md space-y-4">
           {/* Status notice banner */}
           {logoutNotice && !isInSecondaryFlow && (
@@ -1145,9 +1148,11 @@ export const LoginView: React.FC<LoginViewProps> = ({
       </main>
 
       {/* Footer */}
-      <footer className="py-3 px-6 text-center text-[11px] text-slate-500 border-t border-slate-200 bg-white">
+      <footer className="py-3 px-4 sm:px-6 safe-bottom text-center text-[11px] text-slate-500 border-t border-slate-200 bg-white">
         PflegeRust Debian Server · Geschützte Anmeldung (MariaDB, TOTP 2FA, FIDO2 &amp; Passkeys)
       </footer>
+
+      <OfflineIndicator />
     </div>
   );
 };

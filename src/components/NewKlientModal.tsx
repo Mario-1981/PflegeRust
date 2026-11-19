@@ -119,8 +119,8 @@ export const NewKlientModal: React.FC<NewKlientModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-xl w-full p-5 space-y-4 text-xs">
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-xl w-full max-h-[90dvh] overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
         <div className="flex justify-between items-center pb-2 border-b border-slate-200">
           <h3 className="font-bold text-slate-900 text-sm">Neuen Klienten aufnehmen</h3>
           <button
@@ -132,7 +132,7 @@ export const NewKlientModal: React.FC<NewKlientModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-slate-700 font-medium block mb-1">Nachname *</label>
               <input
@@ -157,7 +157,7 @@ export const NewKlientModal: React.FC<NewKlientModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-slate-700 font-medium block mb-1">Geburtsdatum</label>
               <input
@@ -195,8 +195,8 @@ export const NewKlientModal: React.FC<NewKlientModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
               <label className="text-slate-700 font-medium block mb-1">Straße &amp; Hausnummer</label>
               <div className="flex gap-2">
                 <input
@@ -227,7 +227,7 @@ export const NewKlientModal: React.FC<NewKlientModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-slate-700 font-medium block mb-1">Krankenkasse</label>
               <input
@@ -258,8 +258,8 @@ export const NewKlientModal: React.FC<NewKlientModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            <div className="col-span-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="sm:col-span-2">
               <label className="text-slate-700 font-medium block mb-1">Hauptdiagnose</label>
               <input
                 type="text"

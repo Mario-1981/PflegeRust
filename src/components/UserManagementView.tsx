@@ -487,8 +487,8 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
             </span>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-            <table className="w-full text-left text-xs">
+          <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+            <table className="w-full min-w-[820px] text-left text-xs">
               <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
                 <tr>
                   <th className="p-3">Mitarbeiter</th>
@@ -1194,8 +1194,8 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   Benutzer erhalten automatisch die entsprechende Fachrolle anhand ihrer IdP-Gruppenzugehörigkeit (z.B. Keycloak Realm Roles oder Azure AD App Roles).
                 </p>
 
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-left text-xs">
+                <div className="border border-slate-200 rounded-lg overflow-x-auto">
+                  <table className="w-full min-w-[480px] text-left text-xs">
                     <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
                         <th className="p-2.5">IdP Gruppe / Claim</th>
@@ -1397,7 +1397,8 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
             </span>
           </div>
 
-          <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[740px] text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
               <tr>
                 <th className="p-3">Zeitstempel</th>
@@ -1457,13 +1458,14 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {/* Modal: Create Custom Role */}
       {showAddRoleModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-md w-full p-5 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-md w-full max-h-[90dvh] overflow-y-auto p-5 space-y-4 text-xs">
             <div className="flex justify-between items-center pb-2 border-b border-slate-200">
               <div className="flex items-center gap-2">
                 <SlidersHorizontal className="w-4 h-4 text-teal-700" />

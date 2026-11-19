@@ -72,11 +72,11 @@ export const DienstplanView: React.FC<DienstplanViewProps> = ({ mitarbeiter }) =
       </div>
 
       {/* Roster Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <table className="w-full text-left text-xs">
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full min-w-[680px] text-left text-xs">
           <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
             <tr>
-              <th className="p-3 w-64">Mitarbeiter &amp; Qualifikation</th>
+              <th className="p-3 w-56 sm:w-64">Mitarbeiter &amp; Qualifikation</th>
               {DAYS.map((d) => (
                 <th key={d} className="p-3 text-center">
                   {d}

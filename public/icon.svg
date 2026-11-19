@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#115e59"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="40" y="40" width="432" height="432" rx="84" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="6"/>
+  <!-- Clean clinical cross emblem -->
+  <rect x="214" y="106" width="84" height="220" rx="22" fill="#ffffff"/>
+  <rect x="146" y="174" width="220" height="84" rx="22" fill="#ffffff"/>
+  <!-- Accent pulse / shield dot in center -->
+  <circle cx="256" cy="216" r="24" fill="#0f766e"/>
+  <!-- Brand monogram -->
+  <text x="256" y="418" text-anchor="middle" fill="#ccfbf1" font-family="system-ui, -apple-system, sans-serif" font-size="68" font-weight="800" letter-spacing="6">PR</text>
+</svg>

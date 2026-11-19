@@ -9,10 +9,12 @@ import {
   Lock,
   UserPlus,
   Fingerprint,
+  Menu,
 } from 'lucide-react';
 import { downloadRustDebianZip } from '../utils/zipExport';
 import { ActiveSessionUser, BenutzerRolle, RollenDefinition } from '../types/pflege';
 import { canAccessTab, hasPermission } from '../data/rbacConfig';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HeaderProps {
   currentTab: string;
@@ -28,6 +30,7 @@ interface HeaderProps {
   onLogout: () => void;
   onOpenChangePassword: () => void;
   onOpenMfaModal: () => void;
+  onOpenMobileMenu: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -44,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
   onLogout,
   onOpenChangePassword,
   onOpenMfaModal,
+  onOpenMobileMenu,
 }) => {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -92,26 +96,38 @@ export const Header: React.FC<HeaderProps> = ({
   ].filter((item) => canTab(item.id));
 
   return (
-    <header className="flex items-center justify-between gap-6 px-6 py-3.5 bg-white border-b border-slate-200">
-      {/* Zone 1: Single text element wordmark */}
-      <div
-        onClick={() => {
-          if (canTab('dashboard')) onSelectTab('dashboard');
-        }}
-        className="flex items-center gap-2.5 cursor-pointer select-none whitespace-nowrap shrink-0"
-      >
-        <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center font-bold text-sm tracking-tight shadow-xs">
-          PR
+    <header className="sticky top-0 z-30 safe-top bg-white/95 backdrop-blur-md border-b border-slate-200">
+      <div className="flex items-center justify-between gap-2 sm:gap-6 px-3 sm:px-6 py-2 sm:py-3">
+        {/* Zone 1: Mobile Menu Trigger + Brand Wordmark */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 shrink-0">
+          <button
+            type="button"
+            onClick={onOpenMobileMenu}
+            aria-label="Navigationsmenü öffnen"
+            className="lg:hidden min-w-[44px] min-h-[44px] -ml-1.5 flex items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 active:bg-slate-200 transition-colors cursor-pointer"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+
+          <div
+            onClick={() => {
+              if (canTab('dashboard')) onSelectTab('dashboard');
+            }}
+            className="flex items-center gap-2 sm:gap-2.5 cursor-pointer select-none whitespace-nowrap shrink-0"
+          >
+            <div className="w-8 h-8 rounded-lg bg-teal-700 text-white flex items-center justify-center font-bold text-sm tracking-tight shadow-xs">
+              PR
+            </div>
+            <div className="flex flex-col">
+              <span className="text-base sm:text-lg font-bold tracking-tight text-slate-900 leading-none">
+                PflegeRust
+              </span>
+              <span className="text-[10px] text-teal-700 font-mono font-medium mt-0.5 hidden xs:block sm:block">
+                MariaDB &amp; SSO
+              </span>
+            </div>
+          </div>
         </div>
-        <div className="flex flex-col">
-          <span className="text-lg font-bold tracking-tight text-slate-900 leading-none">
-            PflegeRust
-          </span>
-          <span className="text-[10px] text-teal-700 font-mono font-medium mt-0.5">
-            MariaDB &amp; SSO
-          </span>
-        </div>
-      </div>
 
       {/* Zone 2: Concise single-line navigation links (filtered strictly by role) */}
       <nav className="hidden lg:flex items-center gap-5 text-sm font-medium text-slate-600">
@@ -128,8 +144,10 @@ export const Header: React.FC<HeaderProps> = ({
         ))}
       </nav>
 
-      {/* Zone 3: User Session Menu, Logout, MariaDB & Export */}
-      <div className="flex items-center gap-2.5 shrink-0">
+      {/* Zone 3: PWA Install, User Session Menu, Logout, MariaDB & Export */}
+      <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+        <PWAInstallButton variant="header" />
+
         {/* User Account Dropdown */}
         <div className="relative" ref={menuRef}>
           <button
@@ -138,9 +156,9 @@ export const Header: React.FC<HeaderProps> = ({
             aria-expanded={isUserMenuOpen}
             aria-haspopup="menu"
             title="Benutzerkonto, Benutzerwechsel & Abmeldung"
-            className="flex items-center gap-2 px-2.5 py-1 text-xs bg-slate-50 border border-slate-200 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 min-h-[40px] sm:min-h-[36px] text-xs bg-slate-50 border border-slate-200 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
           >
-            <div className="w-6 h-6 rounded-full bg-teal-800 text-white font-bold flex items-center justify-center text-[10px]">
+            <div className="w-6 h-6 rounded-full bg-teal-800 text-white font-bold flex items-center justify-center text-[10px] shrink-0">
               {initials}
             </div>
             <div className="text-left hidden sm:block">
@@ -161,7 +179,7 @@ export const Header: React.FC<HeaderProps> = ({
           {isUserMenuOpen && (
             <div
               role="menu"
-              className="absolute right-0 mt-1.5 w-72 bg-white border border-slate-200 rounded-lg shadow-lg z-40 overflow-hidden text-xs"
+              className="absolute right-0 mt-1.5 w-[min(18rem,calc(100vw-1.5rem))] bg-white border border-slate-200 rounded-lg shadow-lg z-40 overflow-hidden text-xs"
             >
               {/* Current signed-in user */}
               <div className="p-3 bg-slate-50 border-b border-slate-200 space-y-0.5">
@@ -269,6 +287,10 @@ export const Header: React.FC<HeaderProps> = ({
                     <span>{canManageUsers ? 'Nutzer, Rollen & SSO' : 'DSGVO Audit-Log'}</span>
                   </button>
                 )}
+                <PWAInstallButton
+                  variant="menuItem"
+                  onAfterTrigger={() => setIsUserMenuOpen(false)}
+                />
                 <button
                   type="button"
                   role="menuitem"
@@ -301,12 +323,12 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        {/* Direct Logout Button */}
+        {/* Direct Logout Button (tablet/desktop; mobile uses dropdown & drawer) */}
         <button
           type="button"
           onClick={onLogout}
           title="Sitzung beenden und abmelden"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-rose-50 hover:text-rose-700 border border-slate-200 hover:border-rose-200 rounded-md transition-colors cursor-pointer"
+          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-rose-50 hover:text-rose-700 border border-slate-200 hover:border-rose-200 rounded-md transition-colors cursor-pointer"
         >
           <LogOut className="w-3.5 h-3.5" />
           <span className="hidden xl:inline">Abmelden</span>
@@ -326,13 +348,14 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={() => downloadRustDebianZip()}
               title="Vollständiges Rust-Projekt und Debian-Paketdateien mit MariaDB als ZIP herunterladen"
-              className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-teal-800 rounded-md hover:bg-teal-900 transition-colors whitespace-nowrap shrink-0 shadow-xs cursor-pointer"
+              className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-teal-800 rounded-md hover:bg-teal-900 transition-colors whitespace-nowrap shrink-0 shadow-xs cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Rust .deb Paket</span>
+              <span className="hidden md:inline">Rust .deb Paket</span>
             </button>
           </>
         )}
+      </div>
       </div>
     </header>
   );

@@ -136,8 +136,8 @@ export const MedikationView: React.FC<MedikationViewProps> = ({
       </div>
 
       {/* Meds Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <table className="w-full text-left text-xs">
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-xs">
           <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
             <tr>
               <th className="p-3">Klient</th>
@@ -206,8 +206,8 @@ export const MedikationView: React.FC<MedikationViewProps> = ({
 
       {/* Add Medication Modal */}
       {canEditMedikation && showAddModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-lg w-full p-5 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-lg w-full max-h-[90dvh] overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
             <div className="flex justify-between items-center pb-2 border-b border-slate-200">
               <h3 className="font-bold text-slate-900 text-sm">Neues Medikament erfassen</h3>
               <button
@@ -234,7 +234,7 @@ export const MedikationView: React.FC<MedikationViewProps> = ({
                 </select>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-700 font-medium block mb-1">Handelsname</label>
                   <input
@@ -258,7 +258,7 @@ export const MedikationView: React.FC<MedikationViewProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 <div>
                   <label className="text-[11px] text-slate-500 block mb-1">Darreichung</label>
                   <select
@@ -326,7 +326,7 @@ export const MedikationView: React.FC<MedikationViewProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-700 font-medium block mb-1">Verordnender Arzt</label>
                   <input

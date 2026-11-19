@@ -3,10 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
+import { MobileBottomNav } from './components/MobileBottomNav';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import { DashboardView } from './components/DashboardView';
 import { KlientenView } from './components/KlientenView';
 import { TourenView } from './components/TourenView';
@@ -90,6 +92,15 @@ export default function App() {
   const [logoutNotice, setLogoutNotice] = useState<string | null>(null);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isMfaModalOpen, setIsMfaModalOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMobileMenuOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const [selectedKlientId, setSelectedKlientId] = useState<string | null>(
     INITIAL_KLIENTEN[0]?.id || null
@@ -143,6 +154,7 @@ export default function App() {
       return;
     }
     setCurrentTab(tab);
+    setIsMobileMenuOpen(false);
   };
 
   // SNAP Migration integration handler
@@ -1098,6 +1110,7 @@ export default function App() {
   const handleSwitchUser = (targetSessionId?: string) => {
     setIsChangePasswordOpen(false);
     setIsMfaModalOpen(false);
+    setIsMobileMenuOpen(false);
     setSwitchTargetSessionId(targetSessionId || null);
     setActiveUser(null);
     setLogoutNotice(
@@ -1139,6 +1152,7 @@ export default function App() {
     setActiveUser(null);
     setIsChangePasswordOpen(false);
     setIsMfaModalOpen(false);
+    setIsMobileMenuOpen(false);
     setLogoutNotice(
       `Sie wurden als ${prevName} vollständig abgemeldet. Für eine erneute Anmeldung sind Passwort/2FA oder Ihr Passkey erforderlich.`
     );
@@ -1319,14 +1333,17 @@ export default function App() {
     : touren.filter((t) => t.zugewiesenerBenutzerId === activeUser.id);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-100 font-sans text-slate-900">
-      {/* Toast Notification */}
+    <div className="min-h-[100dvh] flex flex-col bg-slate-100 font-sans text-slate-900">
+      {/* Toast Notification (clears mobile bottom tab bar) */}
       {notification && (
-        <div className="fixed bottom-5 right-5 z-50 bg-teal-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-xs font-medium border border-teal-700 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
-          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <div className="fixed bottom-20 lg:bottom-5 left-3 right-3 sm:left-auto sm:right-5 z-50 bg-teal-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-xs font-medium border border-teal-700 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
           <span>{notification}</span>
         </div>
       )}
+
+      {/* Offline Connectivity Banner */}
+      <OfflineIndicator />
 
       {/* Header */}
       <Header
@@ -1345,11 +1362,12 @@ export default function App() {
         onLogout={handleLogout}
         onOpenChangePassword={() => setIsChangePasswordOpen(true)}
         onOpenMfaModal={() => setIsMfaModalOpen(true)}
+        onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
       />
 
       {/* Main Layout Area */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar */}
+      <div className="flex-1 flex min-w-0">
+        {/* Sidebar (Desktop persistent + Mobile/Tablet slide-over drawer) */}
         <Sidebar
           currentTab={effectiveTab}
           onSelectTab={handleSelectTab}
@@ -1368,10 +1386,12 @@ export default function App() {
           onOpenMfaModal={() => setIsMfaModalOpen(true)}
           onSwitchUser={() => handleSwitchUser()}
           onLogout={handleLogout}
+          isMobileOpen={isMobileMenuOpen}
+          onCloseMobile={() => setIsMobileMenuOpen(false)}
         />
 
         {/* Viewport Canvas */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 min-w-0 overflow-y-auto p-3 sm:p-5 lg:p-6 pb-24 lg:pb-6 safe-x">
           <div className="max-w-7xl mx-auto">
             {!hasEffectiveTabAccess && (
               <div className="bg-white border border-slate-200 rounded-xl p-8 max-w-lg mx-auto mt-10 text-center space-y-3 shadow-xs">
@@ -1576,6 +1596,15 @@ export default function App() {
         mfaPolicyReason={mfaPolicyReason}
         onClose={() => setIsMfaModalOpen(false)}
         onUpdateUserMfa={handleUpdateUserMfa}
+      />
+      {/* Mobile & Portrait Tablet Thumb-Zone Bottom Tab Bar */}
+      <MobileBottomNav
+        currentTab={effectiveTab}
+        onSelectTab={handleSelectTab}
+        onOpenDrawer={() => setIsMobileMenuOpen(true)}
+        activeUser={activeUser}
+        rollenConfig={rollenConfig}
+        tourCount={visibleTouren.length}
       />
     </div>
   );

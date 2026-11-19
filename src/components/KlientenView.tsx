@@ -375,12 +375,12 @@ export const KlientenView: React.FC<KlientenViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Segmented Filter for Pflegegrad */}
-          <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-md border border-slate-200">
+          <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-md border border-slate-200 overflow-x-auto max-w-full">
             <button
               onClick={() => setSelectedPgFilter('all')}
-              className={`px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer ${
+              className={`px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 selectedPgFilter === 'all'
                   ? 'bg-white text-slate-900 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -392,7 +392,7 @@ export const KlientenView: React.FC<KlientenViewProps> = ({
               <button
                 key={pg}
                 onClick={() => setSelectedPgFilter(pg)}
-                className={`px-2 py-1 text-xs font-mono font-medium rounded transition-colors cursor-pointer ${
+                className={`px-2 py-1 text-xs font-mono font-medium rounded transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   selectedPgFilter === pg
                     ? 'bg-teal-700 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -416,9 +416,9 @@ export const KlientenView: React.FC<KlientenViewProps> = ({
       </div>
 
       {/* Main Master-Detail Split */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5">
         {/* Left List (4 Cols) */}
-        <div className="lg:col-span-4 bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col h-[750px]">
+        <div className="lg:col-span-4 bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col max-h-72 lg:max-h-none lg:h-[750px]">
           <div className="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center text-xs text-slate-600 font-medium">
             <span>Klientenliste ({filteredKlienten.length})</span>
             <span className="text-[11px] text-slate-400">Klicken zur Auswahl</span>
@@ -793,8 +793,8 @@ export const KlientenView: React.FC<KlientenViewProps> = ({
                       </form>
                     )}
 
-                    <div className="border border-slate-200 rounded-lg overflow-hidden">
-                      <table className="w-full text-left">
+                    <div className="border border-slate-200 rounded-lg overflow-x-auto">
+                      <table className="w-full min-w-[580px] text-left">
                         <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                           <tr>
                             <th className="p-2.5">Datum &amp; Uhrzeit</th>
@@ -1205,7 +1205,7 @@ export const KlientenView: React.FC<KlientenViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-4 gap-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                           <div>
                             <label className="text-[11px] text-slate-500 block mb-0.5">Morgens</label>
                             <input
@@ -1293,8 +1293,8 @@ export const KlientenView: React.FC<KlientenViewProps> = ({
                       </form>
                     )}
 
-                    <div className="border border-slate-200 rounded-lg overflow-hidden">
-                      <table className="w-full text-left">
+                    <div className="border border-slate-200 rounded-lg overflow-x-auto">
+                      <table className="w-full min-w-[600px] text-left">
                         <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                           <tr>
                             <th className="p-2.5">Medikament &amp; Wirkstoff</th>

@@ -379,7 +379,7 @@ export const MigrationView: React.FC<MigrationViewProps> = ({
       </div>
 
       {/* Step Indicator */}
-      <div className="grid grid-cols-4 gap-2 text-xs">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         {[
           { num: 1, label: '1. Quelldatei' },
           { num: 2, label: '2. MariaDB Schema-Mapping' },
@@ -466,8 +466,8 @@ export const MigrationView: React.FC<MigrationViewProps> = ({
               Automatische Übersetzung der legacy SNAP-Feldbezeichnungen in das relationale MariaDB InnoDB Schema (<code className="font-mono text-teal-800">pflege_db</code>).
             </p>
 
-            <div className="border border-slate-200 rounded-lg overflow-hidden">
-              <table className="w-full text-left text-xs">
+            <div className="border border-slate-200 rounded-lg overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-xs">
                 <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
                   <tr>
                     <th className="p-3">SNAP Legacy Feld</th>
@@ -637,7 +637,7 @@ export const MigrationView: React.FC<MigrationViewProps> = ({
                   <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                   <span>SNAP-Migration in MariaDB erfolgreich abgeschlossen!</span>
                 </div>
-                <div className="grid grid-cols-3 gap-3 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                   <div className="p-2.5 bg-white border border-emerald-200 rounded">
                     <span className="text-slate-500 block">Klienten in MariaDB</span>
                     <span className="text-lg font-bold text-slate-900 font-mono">
@@ -658,7 +658,7 @@ export const MigrationView: React.FC<MigrationViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex gap-2 pt-2">
+                <div className="flex flex-wrap gap-2 pt-2">
                   <button
                     onClick={() => onSelectTab('klienten')}
                     className="px-3.5 py-1.5 text-xs font-semibold text-white bg-teal-800 hover:bg-teal-900 rounded-md transition-colors cursor-pointer"

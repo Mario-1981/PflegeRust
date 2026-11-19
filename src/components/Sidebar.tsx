@@ -17,6 +17,7 @@ import {
   ArrowLeftRight,
   Plug,
   Fingerprint,
+  X,
 } from 'lucide-react';
 import {
   ActiveSessionUser,
@@ -25,6 +26,7 @@ import {
   RollenDefinition,
 } from '../types/pflege';
 import { canAccessTab, hasPermission } from '../data/rbacConfig';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface SidebarProps {
   currentTab: string;
@@ -42,6 +44,8 @@ interface SidebarProps {
   onOpenMfaModal: () => void;
   onSwitchUser: () => void;
   onLogout: () => void;
+  isMobileOpen: boolean;
+  onCloseMobile: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -60,6 +64,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenMfaModal,
   onSwitchUser,
   onLogout,
+  isMobileOpen,
+  onCloseMobile,
 }) => {
   const canTab = (tabId: string) => canAccessTab(activeUser.role, tabId, rollenConfig);
   const canManageUsers = hasPermission(activeUser.role, 'users_verwalten', rollenConfig);
@@ -95,19 +101,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'systempflege', label: 'System: Snap vs. Debian', icon: Server },
   ].filter((item) => canTab(item.id));
 
-  return (
-    <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col shrink-0 min-h-full border-r border-slate-800 select-none">
-      <div className="p-4 border-b border-slate-800">
-        <div className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-1">
-          {einrichtung.versorgungsform}
+  const handleNavClick = (tabId: string) => {
+    onSelectTab(tabId);
+    onCloseMobile();
+  };
+
+  const renderSidebarContent = (isDrawer: boolean) => (
+    <div
+      className={`bg-slate-900 text-slate-300 flex flex-col h-full select-none ${
+        isDrawer ? 'w-[min(19rem,86vw)] safe-top safe-bottom shadow-2xl' : 'w-64 border-r border-slate-800'
+      }`}
+    >
+      <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-1">
+            {einrichtung.versorgungsform}
+          </div>
+          <div className="text-sm font-medium text-white truncate" title={einrichtung.name}>
+            {einrichtung.name}
+          </div>
+          <div className="mt-1 text-xs text-teal-400 font-mono flex items-center gap-1.5">
+            <Database className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+            <span>Debian 12 · MariaDB 10.11</span>
+          </div>
         </div>
-        <div className="text-sm font-medium text-white truncate" title={einrichtung.name}>
-          {einrichtung.name}
-        </div>
-        <div className="mt-1 text-xs text-teal-400 font-mono flex items-center gap-1.5">
-          <Database className="w-3.5 h-3.5 text-teal-400" />
-          <span>Debian 12 · MariaDB 10.11</span>
-        </div>
+        {isDrawer && (
+          <button
+            type="button"
+            onClick={onCloseMobile}
+            aria-label="Menü schließen"
+            className="min-w-[44px] min-h-[44px] -mr-2 -mt-2 flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
@@ -122,20 +149,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
               return (
                 <button
                   key={item.id}
-                  onClick={() => onSelectTab(item.id)}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors ${
+                  onClick={() => handleNavClick(item.id)}
+                  className={`w-full flex items-center justify-between px-3 ${
+                    isDrawer ? 'min-h-[44px] py-2.5 text-sm' : 'py-2 text-xs'
+                  } rounded-md font-medium transition-colors cursor-pointer ${
                     isActive
                       ? 'bg-teal-700 text-white font-semibold shadow-xs'
                       : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <Icon className="w-4 h-4 text-slate-400 group-hover:text-white" />
-                    <span>{item.label}</span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Icon
+                      className={`w-4 h-4 shrink-0 ${
+                        isActive ? 'text-white' : 'text-slate-400'
+                      }`}
+                    />
+                    <span className="truncate">{item.label}</span>
                   </div>
                   {item.count !== undefined && (
                     <span
-                      className={`text-xs font-mono px-1.5 py-0.5 rounded ${
+                      className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 ${
                         isActive ? 'bg-teal-800 text-teal-100' : 'bg-slate-800 text-slate-400'
                       }`}
                     >
@@ -160,8 +193,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 return (
                   <button
                     key={item.id}
-                    onClick={() => onSelectTab(item.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    onClick={() => handleNavClick(item.id)}
+                    className={`w-full flex items-center justify-between px-3 ${
+                      isDrawer ? 'min-h-[44px] py-2.5 text-sm' : 'py-2 text-xs'
+                    } rounded-md font-medium transition-colors cursor-pointer ${
                       isActive
                         ? 'bg-teal-700 text-white font-semibold shadow-xs'
                         : item.highlight
@@ -169,12 +204,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <Icon className="w-4 h-4" />
-                      <span>{item.label}</span>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{item.label}</span>
                     </div>
                     {item.highlight && (
-                      <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 bg-teal-800/80 text-teal-200 rounded">
+                      <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 bg-teal-800/80 text-teal-200 rounded shrink-0">
                         Tool
                       </span>
                     )}
@@ -197,11 +232,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
         </div>
+
+        {isDrawer && (
+          <PWAInstallButton variant="sidebar" onAfterTrigger={onCloseMobile} />
+        )}
+
         <button
           type="button"
-          onClick={onOpenMfaModal}
+          onClick={() => {
+            onCloseMobile();
+            onOpenMfaModal();
+          }}
           title="Authenticator-App (TOTP), FIDO2-Sicherheitsstick & Passkeys verwalten"
-          className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-md text-[11px] font-semibold text-teal-200 bg-teal-950/70 hover:bg-teal-900/70 border border-teal-800/70 transition-colors cursor-pointer"
+          className="w-full flex items-center justify-between gap-2 px-2.5 py-2.5 min-h-[40px] rounded-md text-[11px] font-semibold text-teal-200 bg-teal-950/70 hover:bg-teal-900/70 border border-teal-800/70 transition-colors cursor-pointer"
         >
           <span className="flex items-center gap-1.5">
             <Fingerprint className="w-3.5 h-3.5 text-teal-400 shrink-0" />
@@ -227,18 +270,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="grid grid-cols-2 gap-1.5">
           <button
             type="button"
-            onClick={onSwitchUser}
+            onClick={() => {
+              onCloseMobile();
+              onSwitchUser();
+            }}
             title="Sitzung pausieren und Benutzer wechseln"
-            className="flex items-center justify-center gap-1.5 px-2 py-2 rounded-md text-[11px] font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors cursor-pointer"
+            className="flex items-center justify-center gap-1.5 px-2 min-h-[40px] rounded-md text-[11px] font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors cursor-pointer"
           >
             <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
             <span>Wechseln</span>
           </button>
           <button
             type="button"
-            onClick={onLogout}
+            onClick={() => {
+              onCloseMobile();
+              onLogout();
+            }}
             title="Sitzung vollständig beenden und abmelden"
-            className="flex items-center justify-center gap-1.5 px-2 py-2 rounded-md text-[11px] font-semibold text-slate-200 bg-slate-800 hover:bg-rose-900/70 hover:text-white border border-slate-700 hover:border-rose-700 transition-colors cursor-pointer"
+            className="flex items-center justify-center gap-1.5 px-2 min-h-[40px] rounded-md text-[11px] font-semibold text-slate-200 bg-slate-800 hover:bg-rose-900/70 hover:text-white border border-slate-700 hover:border-rose-700 transition-colors cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5 shrink-0" />
             <span>Abmelden</span>
@@ -248,12 +297,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {canSystem && (
         <div
-          onClick={onOpenMariaDbModal}
+          onClick={() => {
+            onCloseMobile();
+            onOpenMariaDbModal();
+          }}
           className="p-3.5 border-t border-slate-800 bg-slate-950/60 hover:bg-slate-950 cursor-pointer transition-colors"
         >
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <Database className="w-3.5 h-3.5 text-emerald-400" />
               MariaDB InnoDB
             </span>
             <span className="font-mono text-teal-400 text-[11px]">Port 3306</span>
@@ -263,6 +315,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
       )}
-    </aside>
+    </div>
+  );
+
+  return (
+    <>
+      {/* Desktop & Landscape Tablet persistent Sidebar */}
+      <aside className="hidden lg:flex shrink-0 min-h-full">
+        {renderSidebarContent(false)}
+      </aside>
+
+      {/* Mobile & Portrait Tablet Slide-Over Drawer */}
+      {isMobileOpen && (
+        <div
+          className="lg:hidden fixed inset-0 z-40 flex"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigationsmenü"
+        >
+          <div
+            className="fixed inset-0 bg-slate-900/50 backdrop-blur-[1px]"
+            onClick={onCloseMobile}
+          />
+          <div className="relative z-10 h-full">{renderSidebarContent(true)}</div>
+        </div>
+      )}
+    </>
   );
 };
