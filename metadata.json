@@ -1,0 +1,6 @@
+{
+  "name": "PflegeRust - Pflegemanagement & SNAP Migration für Debian Linux",
+  "description": "Hochperformantes Pflegemanagement für ambulante und stationäre Dienste nach Vorbild von SNAP, mit integriertem SNAP-Migrationswerkzeug und nativer MariaDB-Anbindung, geschrieben in Rust für Debian Linux.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
