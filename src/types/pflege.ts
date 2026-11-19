@@ -111,6 +111,8 @@ export interface Tour {
   name: string;
   schicht: 'Frühdienst' | 'Spätdienst' | 'Nachtdienst';
   fahrerKuerzel: string;
+  zugewiesenerBenutzerId?: string;
+  zugewiesenerMitarbeiterName?: string;
   fahrzeugKennzeichen: string;
   bereich: string;
   halte: TourHalt[];
@@ -175,6 +177,7 @@ export type Berechtigung =
   | 'klienten_bearbeiten'
   | 'touren_lesen'
   | 'touren_quittieren'
+  | 'touren_planen'
   | 'sis_lesen'
   | 'sis_bearbeiten'
   | 'medikation_lesen'
@@ -195,6 +198,41 @@ export interface RollenDefinition {
   beschreibung: string;
   berechtigungen: Berechtigung[];
   istStandard?: boolean;
+  zweiFaktorPflicht?: boolean;
+}
+
+export interface SicherheitsSchluessel {
+  id: string;
+  credentialId: string;
+  bezeichnung: string;
+  transport: 'usb' | 'nfc' | 'ble' | 'hybrid';
+  modus: 'webauthn' | 'ecdsa_sandbox';
+  publicKeyJwk?: JsonWebKey;
+  erstelltAm: string;
+  zuletztVerwendet?: string;
+  signCount: number;
+}
+
+export interface PasskeyEintrag {
+  id: string;
+  credentialId: string;
+  bezeichnung: string;
+  geraeteTyp: 'platform' | 'roaming';
+  modus: 'webauthn' | 'ecdsa_sandbox';
+  publicKeyJwk?: JsonWebKey;
+  erstelltAm: string;
+  zuletztVerwendet?: string;
+  signCount: number;
+}
+
+export interface BenutzerZweiFaktorConfig {
+  aktiviert: boolean;
+  totpAktiviert: boolean;
+  totpSecret?: string;
+  totpEingerichtetAm?: string;
+  backupCodeHashes?: string[];
+  sicherheitsSchluessel: SicherheitsSchluessel[];
+  passkeys: PasskeyEintrag[];
 }
 
 export interface AppBenutzer {
@@ -214,6 +252,8 @@ export interface AppBenutzer {
   passwortHash?: string;
   fehlversuche?: number;
   mussPasswortAendern?: boolean;
+  zweiFaktorPflicht?: boolean;
+  zweiFaktor?: BenutzerZweiFaktorConfig;
 }
 
 export interface SsoKonfiguration {
@@ -263,6 +303,12 @@ export interface AuditLogEintrag {
     | 'LOGIN_FAILED'
     | 'LOGOUT'
     | 'PASSWORD_CHANGE'
+    | 'MFA_SETUP'
+    | 'MFA_VERIFIED'
+    | 'MFA_FAILED'
+    | 'PASSKEY_REGISTER'
+    | 'PASSKEY_LOGIN'
+    | 'PASSKEY_REMOVE'
     | 'ROLE_CHANGE'
     | 'ROLE_CONFIG_CHANGE'
     | 'ROLE_CREATE'
@@ -273,6 +319,7 @@ export interface AuditLogEintrag {
     | 'TI_DISPATCH'
     | 'PATIENT_READ'
     | 'PATIENT_UPDATE'
+    | 'TOUR_PLAN_UPDATE'
     | 'MED_DISPENSE'
     | 'SSO_CONFIG_CHANGE'
     | 'EXPORT_DTA';

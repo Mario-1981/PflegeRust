@@ -16,6 +16,9 @@ import {
   Users,
   LogOut,
   UserPlus,
+  Smartphone,
+  Usb,
+  Fingerprint,
 } from 'lucide-react';
 import { ActiveSessionUser, AppBenutzer, SsoKonfiguration } from '../types/pflege';
 import {
@@ -24,6 +27,14 @@ import {
   createPasswordRecord,
   MAX_LOGIN_ATTEMPTS,
 } from '../utils/authCrypto';
+import {
+  hasActiveSecondFactor,
+  hasRegisteredPasskey,
+  verifyAndConsumeBackupCode,
+  verifyDiscoverablePasskeyNative,
+  verifyTotpCode,
+  verifyWebAuthnAssertion,
+} from '../utils/mfaCrypto';
 
 interface LoginViewProps {
   benutzer: AppBenutzer[];
@@ -36,6 +47,14 @@ interface LoginViewProps {
   onLogin: (user: AppBenutzer, authLabel: string) => void;
   onEndSession: (userId: string) => void;
   onFailedLogin: (identifier: string, matchedUser?: AppBenutzer, viaSso?: boolean) => void;
+  onMfaVerified: (user: AppBenutzer, details: string, isPasskey?: boolean) => void;
+  onMfaFailed: (user: AppBenutzer, details: string) => void;
+  onConsumeBackupCode: (userId: string, remainingHashes: string[]) => void;
+  onRecordCredentialUsage: (
+    userId: string,
+    kind: 'security_key' | 'passkey',
+    credentialId: string
+  ) => void;
   onCompleteForcedPasswordChange: (
     userId: string,
     salt: string,
@@ -67,6 +86,10 @@ export const LoginView: React.FC<LoginViewProps> = ({
   onLogin,
   onEndSession,
   onFailedLogin,
+  onMfaVerified,
+  onMfaFailed,
+  onConsumeBackupCode,
+  onRecordCredentialUsage,
   onCompleteForcedPasswordChange,
 }) => {
   const [authTab, setAuthTab] = useState<'lokal' | 'sso'>('lokal');
@@ -86,7 +109,17 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
 
-  // If user clicked a specific signed-in session in Header to switch to, pre-select ONLY that active session (still requires password)
+  // 2FA Challenge step (after password verification for local users)
+  const [pendingMfaUser, setPendingMfaUser] = useState<{
+    user: AppBenutzer;
+    authLabel: string;
+  } | null>(null);
+  const [mfaMethodTab, setMfaMethodTab] = useState<'totp' | 'security_key' | 'backup'>('totp');
+  const [totpCodeInput, setTotpCodeInput] = useState('');
+  const [backupCodeInput, setBackupCodeInput] = useState('');
+  const [selectedSecurityKeyId, setSelectedSecurityKeyId] = useState<string>('');
+
+  // If user clicked a specific signed-in session in Header to switch to, pre-select ONLY that active session
   useEffect(() => {
     if (!initialTargetSessionId) return;
     const targetSession = activeSessions.find((s) => s.id === initialTargetSessionId);
@@ -115,6 +148,21 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setIdentifier('');
     setPassword('');
     setErrorMsg(null);
+  };
+
+  const enterMfaStepOrLogin = (user: AppBenutzer, authLabel: string) => {
+    if (user.authMethode === 'lokal' && hasActiveSecondFactor(user)) {
+      const hasTotp = Boolean(user.zweiFaktor?.totpAktiviert);
+      const keys = user.zweiFaktor?.sicherheitsSchluessel || [];
+      setPendingMfaUser({ user, authLabel });
+      setMfaMethodTab(hasTotp ? 'totp' : 'security_key');
+      setSelectedSecurityKeyId(keys[0]?.credentialId || '');
+      setTotpCodeInput('');
+      setBackupCodeInput('');
+      setErrorMsg(null);
+      return;
+    }
+    onLogin(user, authLabel);
   };
 
   const handleAuthenticate = async (e: React.FormEvent, mode: 'lokal' | 'sso') => {
@@ -217,14 +265,199 @@ export const LoginView: React.FC<LoginViewProps> = ({
       }
 
       const authLabel = getAuthMethodLabel(found.authMethode);
+      setPassword('');
 
       if (found.mussPasswortAendern && mode === 'lokal') {
         setPendingPasswordChangeUser({ user: found, authLabel });
-        setPassword('');
         return;
       }
 
-      onLogin(found, authLabel);
+      enterMfaStepOrLogin(found, authLabel);
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  // ---------- 2FA Verification Handlers ----------
+
+  const handleVerifyTotp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingMfaUser) return;
+    setErrorMsg(null);
+    setIsVerifying(true);
+    try {
+      const ok = await verifyTotpCode(
+        pendingMfaUser.user.zweiFaktor?.totpSecret,
+        totpCodeInput,
+        1
+      );
+      if (!ok) {
+        onMfaFailed(pendingMfaUser.user, 'Ungültiger 6-stelliger Authenticator-App-Code (TOTP)');
+        setErrorMsg('Der eingegebene 6-stellige Authenticator-Code ist ungültig oder abgelaufen.');
+        setTotpCodeInput('');
+        return;
+      }
+      onMfaVerified(pendingMfaUser.user, '2. Faktor via Authenticator-App (TOTP) verifiziert');
+      const target = pendingMfaUser;
+      setPendingMfaUser(null);
+      setTotpCodeInput('');
+      onLogin(target.user, 'Lokal + 2FA (App)');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleVerifySecurityKey = async () => {
+    if (!pendingMfaUser) return;
+    const keys = pendingMfaUser.user.zweiFaktor?.sicherheitsSchluessel || [];
+    const chosen =
+      keys.find((k) => k.credentialId === selectedSecurityKeyId) || keys[0];
+    if (!chosen) {
+      setErrorMsg('Kein Sicherheitsstick für dieses Konto gefunden.');
+      return;
+    }
+
+    setErrorMsg(null);
+    setIsVerifying(true);
+    try {
+      const res = await verifyWebAuthnAssertion({
+        credentialId: chosen.credentialId,
+        modus: chosen.modus,
+        publicKeyJwk: chosen.publicKeyJwk,
+        userVerification: 'preferred',
+      });
+      if (!res.ok) {
+        onMfaFailed(
+          pendingMfaUser.user,
+          `Sicherheitsstick „${chosen.bezeichnung}“ nicht bestätigt`
+        );
+        setErrorMsg(res.error || 'FIDO2-Sicherheitsstick konnte nicht verifiziert werden.');
+        return;
+      }
+
+      onRecordCredentialUsage(pendingMfaUser.user.id, 'security_key', chosen.credentialId);
+      onMfaVerified(
+        pendingMfaUser.user,
+        `2. Faktor via FIDO2-Sicherheitsstick „${chosen.bezeichnung}“ verifiziert`
+      );
+      const target = pendingMfaUser;
+      setPendingMfaUser(null);
+      onLogin(target.user, 'Lokal + 2FA (Stick)');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleVerifyBackupCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingMfaUser) return;
+    setErrorMsg(null);
+    setIsVerifying(true);
+    try {
+      const res = await verifyAndConsumeBackupCode(
+        backupCodeInput,
+        pendingMfaUser.user.zweiFaktor?.backupCodeHashes
+      );
+      if (!res.valid) {
+        onMfaFailed(pendingMfaUser.user, 'Ungültiger 2FA-Einmal-Backup-Code');
+        setErrorMsg('Der eingegebene Wiederherstellungscode ist ungültig oder wurde bereits verwendet.');
+        setBackupCodeInput('');
+        return;
+      }
+      onConsumeBackupCode(pendingMfaUser.user.id, res.remainingHashes);
+      onMfaVerified(
+        pendingMfaUser.user,
+        `2. Faktor via Einmal-Backup-Code verifiziert (${res.remainingHashes.length} verbleibend)`
+      );
+      const target = pendingMfaUser;
+      setPendingMfaUser(null);
+      setBackupCodeInput('');
+      onLogin(target.user, 'Lokal + 2FA (Backup)');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  // ---------- Passkey Passwordless Login Handler ----------
+
+  const handlePasskeyLogin = async () => {
+    setErrorMsg(null);
+    setIsVerifying(true);
+    try {
+      const trimmed = identifier.trim().toLowerCase();
+
+      if (trimmed) {
+        const found = benutzer.find(
+          (u) => u.benutzername.toLowerCase() === trimmed || u.email.toLowerCase() === trimmed
+        );
+        if (!found || !found.aktiv || found.authMethode !== 'lokal' || !hasRegisteredPasskey(found)) {
+          setErrorMsg(
+            'Für diesen Benutzer ist kein aktiver Passkey registriert oder das Konto ist gesperrt.'
+          );
+          return;
+        }
+
+        const passkeys = found.zweiFaktor?.passkeys || [];
+        let matchedPasskey = null;
+        let lastErr = '';
+
+        for (const pk of passkeys) {
+          const check = await verifyWebAuthnAssertion({
+            credentialId: pk.credentialId,
+            modus: pk.modus,
+            publicKeyJwk: pk.publicKeyJwk,
+            userVerification: 'required',
+          });
+          if (check.ok) {
+            matchedPasskey = pk;
+            break;
+          }
+          lastErr = check.error || '';
+        }
+
+        if (!matchedPasskey) {
+          onMfaFailed(found, 'Passkey-Verifizierung fehlgeschlagen oder abgebrochen');
+          setErrorMsg(lastErr || 'Passkey konnte nicht verifiziert werden.');
+          return;
+        }
+
+        onRecordCredentialUsage(found.id, 'passkey', matchedPasskey.credentialId);
+        onMfaVerified(
+          found,
+          `Passwortlose Anmeldung via Passkey „${matchedPasskey.bezeichnung}“ (${
+            matchedPasskey.modus === 'webauthn' ? 'WebAuthn' : 'ECDSA-P256'
+          })`,
+          true
+        );
+        onLogin(found, 'Passkey (FIDO2)');
+        return;
+      }
+
+      // No username typed: attempt native browser discoverable Passkey first (OS/browser picks credential)
+      const nativeRes = await verifyDiscoverablePasskeyNative();
+      if (nativeRes.ok && nativeRes.credentialId) {
+        const owner = benutzer.find(
+          (u) =>
+            u.aktiv &&
+            u.authMethode === 'lokal' &&
+            u.zweiFaktor?.passkeys.some((p) => p.credentialId === nativeRes.credentialId)
+        );
+        if (!owner) {
+          setErrorMsg('Der gewählte Passkey ist keinem aktiven Benutzerkonto zugeordnet.');
+          return;
+        }
+        const pk = owner.zweiFaktor!.passkeys.find(
+          (p) => p.credentialId === nativeRes.credentialId
+        )!;
+        onRecordCredentialUsage(owner.id, 'passkey', pk.credentialId);
+        onMfaVerified(owner, `Discoverable Passkey-Login „${pk.bezeichnung}“`, true);
+        onLogin(owner, 'Passkey (FIDO2)');
+        return;
+      }
+
+      setErrorMsg(
+        'Bitte geben Sie Ihren Benutzernamen oder Ihre E-Mail-Adresse ein und klicken Sie auf „Mit Passkey anmelden“, um Ihren registrierten Passkey zu verifizieren.'
+      );
     } finally {
       setIsVerifying(false);
     }
@@ -252,8 +485,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
         salt,
         hash
       );
+      const label = pendingPasswordChangeUser.authLabel;
+      setPendingPasswordChangeUser(null);
+      setNewPassword('');
+      setConfirmPassword('');
       if (updatedUser) {
-        onLogin(updatedUser, pendingPasswordChangeUser.authLabel);
+        enterMfaStepOrLogin(updatedUser, label);
       }
     } finally {
       setIsVerifying(false);
@@ -261,6 +498,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
   };
 
   const selectedSession = activeSessions.find((s) => s.id === selectedSessionId) || null;
+  const isInSecondaryFlow = Boolean(pendingPasswordChangeUser || pendingMfaUser);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col justify-between">
@@ -275,7 +513,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               PflegeRust
             </span>
             <span className="text-[10px] text-teal-700 font-mono font-medium mt-0.5">
-              Pflegemanagement · MariaDB &amp; SSO
+              Pflegemanagement · MariaDB, 2FA &amp; Passkeys
             </span>
           </div>
         </div>
@@ -292,7 +530,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
       <main className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-md space-y-4">
           {/* Status notice banner */}
-          {logoutNotice && !pendingPasswordChangeUser && (
+          {logoutNotice && !isInSecondaryFlow && (
             <div className="bg-teal-50 border border-teal-200 text-teal-900 rounded-lg px-4 py-3 text-xs flex items-center gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-teal-700 shrink-0" />
               <span>{logoutNotice}</span>
@@ -308,7 +546,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
           )}
 
           {/* ONLY currently signed-in sessions on this workstation (NEVER all users) */}
-          {!pendingPasswordChangeUser && activeSessions.length > 0 && (
+          {!isInSecondaryFlow && activeSessions.length > 0 && (
             <div className="bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs">
                 <div className="font-bold text-slate-900 flex items-center gap-1.5">
@@ -316,7 +554,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                   <span>Angemeldete Benutzer ({activeSessions.length})</span>
                 </div>
                 <span className="text-[10px] font-mono text-slate-500">
-                  Passwort zum Entsperren nötig
+                  Verifizierung erforderlich
                 </span>
               </div>
 
@@ -388,7 +626,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
               {selectedSession && (
                 <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px]">
                   <span className="text-slate-600">
-                    Sitzung entsperren: <strong className="text-slate-900">{selectedSession.name}</strong>
+                    Sitzung entsperren:{' '}
+                    <strong className="text-slate-900">{selectedSession.name}</strong>
                   </span>
                   <button
                     type="button"
@@ -403,17 +642,216 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </div>
           )}
 
-          {/* Card: Either Mandatory Password Change OR Login */}
-          {pendingPasswordChangeUser ? (
+          {/* FLOW 1: 2FA Verification Step (TOTP / FIDO2 Security Key / Backup Code) */}
+          {pendingMfaUser ? (
+            <div className="bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden">
+              <div className="p-6 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-2 text-teal-800 text-xs font-semibold uppercase tracking-wider mb-1">
+                  <ShieldCheck className="w-4 h-4 text-teal-700" />
+                  <span>2-Faktor-Authentifizierung</span>
+                </div>
+                <h1 className="text-lg font-bold text-slate-900">Zweiten Faktor bestätigen</h1>
+                <p className="text-xs text-slate-500 mt-1">
+                  Anmeldung als{' '}
+                  <strong className="text-slate-800">
+                    {pendingMfaUser.user.vorname} {pendingMfaUser.user.name}
+                  </strong>{' '}
+                  ({pendingMfaUser.user.benutzername})
+                </p>
+
+                {/* Method Switcher (only enabled methods shown) */}
+                <div className="mt-4 flex flex-wrap gap-1.5 text-xs">
+                  {pendingMfaUser.user.zweiFaktor?.totpAktiviert && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMfaMethodTab('totp');
+                        setErrorMsg(null);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-md font-semibold flex items-center gap-1.5 border cursor-pointer ${
+                        mfaMethodTab === 'totp'
+                          ? 'bg-teal-50 text-teal-900 border-teal-300'
+                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5" />
+                      <span>Authenticator-App</span>
+                    </button>
+                  )}
+
+                  {(pendingMfaUser.user.zweiFaktor?.sicherheitsSchluessel.length || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMfaMethodTab('security_key');
+                        setErrorMsg(null);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-md font-semibold flex items-center gap-1.5 border cursor-pointer ${
+                        mfaMethodTab === 'security_key'
+                          ? 'bg-teal-50 text-teal-900 border-teal-300'
+                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Usb className="w-3.5 h-3.5" />
+                      <span>Sicherheitsstick</span>
+                    </button>
+                  )}
+
+                  {(pendingMfaUser.user.zweiFaktor?.backupCodeHashes?.length || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMfaMethodTab('backup');
+                        setErrorMsg(null);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-md font-semibold flex items-center gap-1.5 border cursor-pointer ${
+                        mfaMethodTab === 'backup'
+                          ? 'bg-teal-50 text-teal-900 border-teal-300'
+                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>Backup-Code</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                {mfaMethodTab === 'totp' && (
+                  <form onSubmit={handleVerifyTotp} className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="totp-code-input"
+                        className="block text-xs font-semibold text-slate-700 mb-1.5"
+                      >
+                        6-stelliger Code aus Ihrer Authenticator-App
+                      </label>
+                      <input
+                        id="totp-code-input"
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={7}
+                        required
+                        autoFocus
+                        value={totpCodeInput}
+                        onChange={(e) => setTotpCodeInput(e.target.value)}
+                        placeholder="000 000"
+                        className="w-full px-3 py-2.5 text-center font-mono text-lg tracking-[0.25em] border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-700"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isVerifying}
+                      className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 disabled:opacity-50 text-white text-xs font-semibold rounded-md cursor-pointer"
+                    >
+                      {isVerifying ? 'Prüfe Code...' : 'Code bestätigen & anmelden'}
+                    </button>
+                  </form>
+                )}
+
+                {mfaMethodTab === 'security_key' && (
+                  <div className="space-y-4">
+                    <div className="p-3.5 rounded-md bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-2">
+                      <div className="font-semibold text-slate-900 flex items-center gap-1.5">
+                        <Usb className="w-4 h-4 text-teal-700" />
+                        <span>FIDO2-Sicherheitsstick bereit halten</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        Stecken Sie Ihren USB-Sicherheitsstick ein oder halten Sie den NFC-Stick an
+                        das Lesegerät und berühren Sie anschließend den Kontakt.
+                      </p>
+                      {(pendingMfaUser.user.zweiFaktor?.sicherheitsSchluessel.length || 0) > 1 && (
+                        <select
+                          value={selectedSecurityKeyId}
+                          onChange={(e) => setSelectedSecurityKeyId(e.target.value)}
+                          className="w-full p-2 bg-white border border-slate-300 rounded font-medium text-slate-800"
+                        >
+                          {pendingMfaUser.user.zweiFaktor!.sicherheitsSchluessel.map((k) => (
+                            <option key={k.id} value={k.credentialId}>
+                              {k.bezeichnung} ({k.transport.toUpperCase()})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isVerifying}
+                      onClick={handleVerifySecurityKey}
+                      className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 disabled:opacity-50 text-white text-xs font-semibold rounded-md flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Usb className="w-4 h-4" />
+                      <span>
+                        {isVerifying
+                          ? 'Prüfe FIDO2-Signatur...'
+                          : 'Sicherheitsstick jetzt prüfen'}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
+                {mfaMethodTab === 'backup' && (
+                  <form onSubmit={handleVerifyBackupCode} className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="backup-code-input"
+                        className="block text-xs font-semibold text-slate-700 mb-1.5"
+                      >
+                        Einmal-Wiederherstellungscode
+                      </label>
+                      <input
+                        id="backup-code-input"
+                        type="text"
+                        required
+                        autoFocus
+                        value={backupCodeInput}
+                        onChange={(e) => setBackupCodeInput(e.target.value)}
+                        placeholder="XXXX-XXXX"
+                        className="w-full px-3 py-2.5 text-center font-mono text-base uppercase tracking-widest border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-700"
+                      />
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Jeder Backup-Code kann nur einmalig verwendet werden.
+                      </p>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isVerifying}
+                      className="w-full py-2.5 px-4 bg-teal-800 hover:bg-teal-900 disabled:opacity-50 text-white text-xs font-semibold rounded-md cursor-pointer"
+                    >
+                      {isVerifying ? 'Prüfe Backup-Code...' : 'Backup-Code einlösen & anmelden'}
+                    </button>
+                  </form>
+                )}
+
+                <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingMfaUser(null);
+                      setErrorMsg(null);
+                      setTotpCodeInput('');
+                      setBackupCodeInput('');
+                    }}
+                    className="text-slate-600 hover:text-slate-900 font-medium cursor-pointer"
+                  >
+                    &larr; Zurück zur Anmeldung
+                  </button>
+                  <span className="text-[10px] font-mono text-slate-400">BSI TR-03107 · 2FA</span>
+                </div>
+              </div>
+            </div>
+          ) : pendingPasswordChangeUser ? (
+            /* FLOW 2: Mandatory Password Change */
             <div className="bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden">
               <div className="p-6 pb-4 border-b border-slate-100">
                 <div className="flex items-center gap-2 text-amber-800 text-xs font-semibold uppercase tracking-wider mb-1">
                   <ShieldAlert className="w-4 h-4 text-amber-600" />
                   <span>Passwortänderung erforderlich</span>
                 </div>
-                <h1 className="text-lg font-bold text-slate-900">
-                  Neues Passwort festlegen
-                </h1>
+                <h1 className="text-lg font-bold text-slate-900">Neues Passwort festlegen</h1>
                 <p className="text-xs text-slate-500 mt-1">
                   Für{' '}
                   <span className="font-semibold text-slate-800">
@@ -461,7 +899,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
                   />
                 </div>
 
-                {/* Live BSI Password Policy Checklist */}
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-1.5 text-[11px]">
                   <div className="font-semibold text-slate-700">Passwortrichtlinie (BSI):</div>
                   {[
@@ -504,12 +941,13 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     disabled={isVerifying || !policy.valid}
                     className="flex-1 py-2 px-4 bg-teal-800 hover:bg-teal-900 disabled:opacity-50 text-white text-xs font-semibold rounded-md transition-colors cursor-pointer"
                   >
-                    {isVerifying ? 'Speichere...' : 'Passwort speichern & anmelden'}
+                    {isVerifying ? 'Speichere...' : 'Passwort speichern & fortfahren'}
                   </button>
                 </div>
               </form>
             </div>
           ) : (
+            /* FLOW 3: Standard Login + Passkey Login */
             <div className="bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden">
               <div className="p-6 pb-4 border-b border-slate-100">
                 <div className="flex items-center justify-between gap-4">
@@ -540,7 +978,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     }`}
                   >
                     <Lock className="w-3.5 h-3.5 text-teal-700" />
-                    <span>Lokal (MariaDB)</span>
+                    <span>Lokal (2FA / Passkey)</span>
                   </button>
                   <button
                     type="button"
@@ -602,7 +1040,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                       id="login-identifier"
                       type="text"
                       required
-                      autoComplete="username"
+                      autoComplete="username webauthn"
                       value={identifier}
                       onChange={(e) => {
                         setIdentifier(e.target.value);
@@ -668,10 +1106,33 @@ export const LoginView: React.FC<LoginViewProps> = ({
                   </button>
                 </form>
 
+                {/* Passkey Passwordless Login Option (Local Accounts) */}
+                {authTab === 'lokal' && (
+                  <div className="space-y-3">
+                    <div className="relative flex items-center justify-center">
+                      <div className="border-t border-slate-200 w-full" />
+                      <span className="bg-white px-2.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 shrink-0">
+                        oder passwortlos
+                      </span>
+                      <div className="border-t border-slate-200 w-full" />
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isVerifying}
+                      onClick={handlePasskeyLogin}
+                      className="w-full py-2.5 px-4 bg-slate-50 hover:bg-teal-50 text-slate-800 hover:text-teal-950 border border-slate-300 hover:border-teal-300 disabled:opacity-50 text-xs font-semibold rounded-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Fingerprint className="w-4 h-4 text-teal-700" />
+                      <span>Mit Passkey anmelden (Biometrie / FIDO2)</span>
+                    </button>
+                  </div>
+                )}
+
                 <div className="pt-3 border-t border-slate-100 space-y-1 text-[11px] text-slate-500">
                   <div className="flex items-center justify-between">
-                    <span>Brute-Force-Schutz: Sperrung nach {MAX_LOGIN_ATTEMPTS} Fehlversuchen</span>
-                    <span className="font-mono text-slate-400">PBKDF2 / Argon2</span>
+                    <span>2FA: Authenticator-App (TOTP) · FIDO2-Stick · Passkey</span>
+                    <span className="font-mono text-slate-400">WebAuthn</span>
                   </div>
                   <div>
                     Aus Datenschutzgründen werden keine nicht angemeldeten Benutzerkonten angezeigt.
@@ -685,7 +1146,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
       {/* Footer */}
       <footer className="py-3 px-6 text-center text-[11px] text-slate-500 border-t border-slate-200 bg-white">
-        PflegeRust Debian Server · Passwortgeschützte Sitzungen (MariaDB &amp; OIDC/PKCE)
+        PflegeRust Debian Server · Geschützte Anmeldung (MariaDB, TOTP 2FA, FIDO2 &amp; Passkeys)
       </footer>
     </div>
   );

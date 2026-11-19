@@ -16,6 +16,7 @@ import {
   LogOut,
   ArrowLeftRight,
   Plug,
+  Fingerprint,
 } from 'lucide-react';
 import {
   ActiveSessionUser,
@@ -36,6 +37,9 @@ interface SidebarProps {
   rollenConfig: Record<BenutzerRolle, RollenDefinition>;
   onOpenMariaDbModal: () => void;
   activeUser: ActiveSessionUser;
+  hasActive2fa: boolean;
+  passkeyCount: number;
+  onOpenMfaModal: () => void;
   onSwitchUser: () => void;
   onLogout: () => void;
 }
@@ -51,6 +55,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   rollenConfig,
   onOpenMariaDbModal,
   activeUser,
+  hasActive2fa,
+  passkeyCount,
+  onOpenMfaModal,
   onSwitchUser,
   onLogout,
 }) => {
@@ -190,6 +197,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={onOpenMfaModal}
+          title="Authenticator-App (TOTP), FIDO2-Sicherheitsstick & Passkeys verwalten"
+          className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-md text-[11px] font-semibold text-teal-200 bg-teal-950/70 hover:bg-teal-900/70 border border-teal-800/70 transition-colors cursor-pointer"
+        >
+          <span className="flex items-center gap-1.5">
+            <Fingerprint className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+            <span>2FA &amp; Passkeys</span>
+          </span>
+          <span
+            className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+              hasActive2fa || passkeyCount > 0
+                ? 'bg-emerald-900/80 text-emerald-200 border border-emerald-700/60'
+                : 'bg-slate-800 text-slate-300 border border-slate-700'
+            }`}
+          >
+            {hasActive2fa
+              ? passkeyCount > 0
+                ? `Aktiv · ${passkeyCount} PK`
+                : 'Aktiv'
+              : passkeyCount > 0
+              ? `${passkeyCount} Passkey`
+              : 'Einrichten'}
+          </span>
+        </button>
+
         <div className="grid grid-cols-2 gap-1.5">
           <button
             type="button"

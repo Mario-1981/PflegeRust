@@ -54,6 +54,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.8", features = ["v4", "serde"] }
 
+# 2FA (TOTP RFC 6238) & WebAuthn / FIDO2 (Sicherheitssticks & Passkeys)
+totp-rs = { version = "5.5", features = ["qr", "gen_secret"] }
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+
 [profile.release]
 opt-level = 3
 lto = true
@@ -250,10 +254,12 @@ pub async fn create_mariadb_schema(pool: &DbPool) -> Result<(), sqlx::Error> {
             id VARCHAR(64) PRIMARY KEY,
             name VARCHAR(128) NOT NULL,
             shift VARCHAR(32) NOT NULL,
+            assigned_user_id VARCHAR(64) NULL,
             driver_code VARCHAR(16) NOT NULL,
             license_plate VARCHAR(32) NOT NULL,
             area VARCHAR(128) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_tours_assigned_user (assigned_user_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
     )
     .execute(pool)
@@ -403,15 +409,17 @@ CREATE TABLE IF NOT EXISTS patients (
     INDEX idx_patients_ik (insurance_ik)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 2. Tourenplanung
+-- 2. Tourenplanung (exklusive Mitarbeiterzuweisung)
 CREATE TABLE IF NOT EXISTS tours (
     id VARCHAR(64) PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
     shift VARCHAR(32) NOT NULL,
+    assigned_user_id VARCHAR(64) NULL,
     driver_code VARCHAR(16) NOT NULL,
     license_plate VARCHAR(32) NOT NULL,
     area VARCHAR(128) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_tours_assigned_user (assigned_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 3. Haltepunkte pro Tour
@@ -479,11 +487,44 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255),
     department VARCHAR(128),
     is_active BOOLEAN NOT NULL DEFAULT 1,
+    mfa_required BOOLEAN NOT NULL DEFAULT 0,
+    failed_login_attempts INT UNSIGNED NOT NULL DEFAULT 0,
     last_login DATETIME,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_users_username (username),
     INDEX idx_users_email (email),
     INDEX idx_users_sso (sso_subject_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE tours
+    ADD CONSTRAINT fk_tours_assigned_user
+    FOREIGN KEY (assigned_user_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- 6a. 2-Faktor-Authentifizierung (TOTP Authenticator-App & Einmal-Backup-Codes)
+CREATE TABLE IF NOT EXISTS user_mfa_totp (
+    user_id VARCHAR(64) PRIMARY KEY,
+    totp_secret_encrypted VARCHAR(255) NOT NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT 0,
+    backup_code_hashes_json TEXT,
+    enabled_at DATETIME,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6a2. FIDO2 Sicherheitssticks (2FA) & Passkeys (WebAuthn Discoverable Credentials)
+CREATE TABLE IF NOT EXISTS user_webauthn_credentials (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    credential_id VARCHAR(255) NOT NULL UNIQUE,
+    credential_type ENUM('security_key', 'passkey') NOT NULL,
+    label VARCHAR(128) NOT NULL,
+    transport VARCHAR(32) NOT NULL DEFAULT 'usb',
+    public_key_cose BLOB NOT NULL,
+    sign_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_used_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_webauthn_user (user_id, credential_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 6b. Dynamische Benutzerrollen & Berechtigungsmatrix (RBAC)
@@ -493,6 +534,7 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     description TEXT,
     permissions_json TEXT NOT NULL,
     is_standard BOOLEAN NOT NULL DEFAULT 0,
+    mfa_required BOOLEAN NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -801,6 +843,7 @@ pub struct Tour {
     pub id: String,
     pub name: String,
     pub shift: String,
+    pub assigned_user_id: Option<String>,
     pub driver_code: String,
     pub license_plate: String,
     pub area: String,
@@ -830,7 +873,7 @@ pub struct Medication {
     description: 'Axum REST-Routen für MariaDB Abfragen, Session-Auth (Login/Logout) & Klienten-Updates',
     content: `use axum::{
     routing::{get, post, put},
-    Router, Json, extract::{Path, State}, http::StatusCode,
+    Router, Json, extract::{Path, Query, State}, http::StatusCode,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -891,12 +934,16 @@ pub struct CreateRolePayload {
     pub display_name: String,
     pub description: Option<String>,
     pub permissions: Vec<String>,
+    #[serde(default)]
+    pub mfa_required: bool,
     pub actor_username: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateRolePermissionsPayload {
     pub permissions: Vec<String>,
+    #[serde(default)]
+    pub mfa_required: bool,
     pub actor_username: String,
 }
 
@@ -913,6 +960,25 @@ pub struct UpdateUserStatusPayload {
     pub actor_username: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TourAccessQuery {
+    pub actor_user_id: String,
+    pub actor_role: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpsertTourPayload {
+    pub id: Option<String>,
+    pub name: String,
+    pub shift: String,
+    pub assigned_user_id: Option<String>,
+    pub driver_code: String,
+    pub license_plate: String,
+    pub area: String,
+    pub actor_username: String,
+    pub actor_role: String,
+}
+
 pub fn create_router(db_pool: DbPool) -> Router {
     Router::new()
         .route("/api/health", get(health_check))
@@ -920,6 +986,10 @@ pub fn create_router(db_pool: DbPool) -> Router {
         .route("/api/setup/complete", post(complete_initial_setup))
         .route("/api/auth/login", post(login_local))
         .route("/api/auth/logout", post(logout_session))
+        .route("/api/auth/mfa/totp/setup", post(setup_totp_mfa))
+        .route("/api/auth/mfa/totp/verify", post(verify_totp_mfa))
+        .route("/api/auth/webauthn/register/finish", post(register_webauthn_credential))
+        .route("/api/auth/passkey/login", post(login_with_passkey))
         .route("/api/roles", get(list_role_permissions).post(create_role))
         .route("/api/roles/:role", put(update_role_permissions).delete(delete_role))
         .route("/api/users/:id/role", put(update_user_role))
@@ -929,7 +999,8 @@ pub fn create_router(db_pool: DbPool) -> Router {
         .route("/api/addons/:id/ti/dispatch", post(dispatch_ti_action))
         .route("/api/patients", get(list_patients))
         .route("/api/patients/:id", put(update_patient).delete(delete_patient))
-        .route("/api/tours", get(list_tours))
+        .route("/api/tours", get(list_tours).post(create_tour))
+        .route("/api/tours/:id", put(update_tour).delete(delete_tour))
         .with_state(db_pool)
 }
 
@@ -1105,9 +1176,133 @@ async fn logout_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn setup_totp_mfa(
+    State(pool): State<DbPool>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let user_id = payload["user_id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let secret_b32 = payload["secret"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let backup_hashes = payload["backup_code_hashes"].to_string();
+
+    sqlx::query(
+        "INSERT INTO user_mfa_totp (user_id, totp_secret_encrypted, is_enabled, backup_code_hashes_json, enabled_at)
+         VALUES (?, ?, TRUE, ?, NOW())
+         ON DUPLICATE KEY UPDATE totp_secret_encrypted = VALUES(totp_secret_encrypted), is_enabled = TRUE, backup_code_hashes_json = VALUES(backup_code_hashes_json), enabled_at = NOW()"
+    )
+    .bind(user_id)
+    .bind(secret_b32)
+    .bind(&backup_hashes)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(json!({ "status": "totp_enabled", "user_id": user_id })))
+}
+
+async fn verify_totp_mfa(
+    State(pool): State<DbPool>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let user_id = payload["user_id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let code = payload["code"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+
+    let row = sqlx::query("SELECT totp_secret_encrypted FROM user_mfa_totp WHERE user_id = ? AND is_enabled = TRUE")
+        .bind(user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let secret_b32: String = row.get("totp_secret_encrypted");
+    let secret = totp_rs::Secret::Encoded(secret_b32).to_bytes().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let totp = totp_rs::TOTP::new(totp_rs::Algorithm::SHA1, 6, 1, 30, secret)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !totp.check_current(code).unwrap_or(false) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(Json(json!({ "status": "mfa_verified", "method": "totp" })))
+}
+
+async fn register_webauthn_credential(
+    State(pool): State<DbPool>,
+    Json(payload): Json<Value>,
+) -> Result<(StatusCode, Json<Value>), StatusCode> {
+    let id = payload["id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let user_id = payload["user_id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let credential_id = payload["credential_id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let credential_type = payload["credential_type"].as_str().unwrap_or("security_key");
+    let label = payload["label"].as_str().unwrap_or("FIDO2 Schlüssel");
+    let transport = payload["transport"].as_str().unwrap_or("usb");
+    let public_key = payload["public_key"].to_string();
+
+    sqlx::query(
+        "INSERT INTO user_webauthn_credentials (id, user_id, credential_id, credential_type, label, transport, public_key_cose)
+         VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(credential_id)
+    .bind(credential_type)
+    .bind(label)
+    .bind(transport)
+    .bind(public_key.as_bytes())
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::CONFLICT)?;
+
+    Ok((StatusCode::CREATED, Json(json!({ "status": "registered", "credential_id": credential_id, "type": credential_type }))))
+}
+
+async fn login_with_passkey(
+    State(pool): State<DbPool>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let credential_id = payload["credential_id"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+
+    let row = sqlx::query(
+        "SELECT u.id, u.username, u.role, u.is_active, c.sign_count
+         FROM user_webauthn_credentials c
+         JOIN users u ON u.id = c.user_id
+         WHERE c.credential_id = ? AND c.credential_type = 'passkey'"
+    )
+    .bind(credential_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !row.get::<bool, _>("is_active") {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let user_id: String = row.get("id");
+    let username: String = row.get("username");
+    let role: String = row.get("role");
+
+    let _ = sqlx::query("UPDATE user_webauthn_credentials SET sign_count = sign_count + 1, last_used_at = NOW() WHERE credential_id = ?")
+        .bind(credential_id)
+        .execute(&pool)
+        .await;
+
+    let _ = sqlx::query("UPDATE users SET failed_login_attempts = 0, last_login = NOW() WHERE id = ?")
+        .bind(&user_id)
+        .execute(&pool)
+        .await;
+
+    Ok(Json(json!({
+        "status": "authenticated",
+        "method": "passkey_fido2",
+        "id": user_id,
+        "username": username,
+        "role": role
+    })))
+}
+
 async fn list_role_permissions(State(pool): State<DbPool>) -> Result<Json<Value>, StatusCode> {
     let rows = sqlx::query(
-        "SELECT role_name, display_name, description, permissions_json, is_standard FROM role_permissions ORDER BY is_standard DESC, role_name"
+        "SELECT role_name, display_name, description, permissions_json, is_standard, mfa_required FROM role_permissions ORDER BY is_standard DESC, role_name"
     )
         .fetch_all(&pool)
         .await
@@ -1120,6 +1315,7 @@ async fn list_role_permissions(State(pool): State<DbPool>) -> Result<Json<Value>
             let display_name: String = r.get("display_name");
             let description: Option<String> = r.get("description");
             let is_standard: bool = r.get("is_standard");
+            let mfa_required: bool = r.get("mfa_required");
             let perms_raw: String = r.get("permissions_json");
             let perms: Value = serde_json::from_str(&perms_raw).unwrap_or_else(|_| json!([]));
             json!({
@@ -1127,6 +1323,7 @@ async fn list_role_permissions(State(pool): State<DbPool>) -> Result<Json<Value>
                 "display_name": display_name,
                 "description": description,
                 "is_standard": is_standard,
+                "mfa_required": mfa_required,
                 "permissions": perms
             })
         })
@@ -1148,13 +1345,14 @@ async fn create_role(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let result = sqlx::query(
-        "INSERT INTO role_permissions (role_name, display_name, description, permissions_json, is_standard)
-         VALUES (?, ?, ?, ?, FALSE)"
+        "INSERT INTO role_permissions (role_name, display_name, description, permissions_json, is_standard, mfa_required)
+         VALUES (?, ?, ?, ?, FALSE, ?)"
     )
     .bind(key)
     .bind(payload.display_name.trim())
     .bind(payload.description.as_deref().unwrap_or(""))
     .bind(&perms_json)
+    .bind(payload.mfa_required)
     .execute(&pool)
     .await;
 
@@ -1226,12 +1424,13 @@ async fn update_role_permissions(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
     sqlx::query(
-        "INSERT INTO role_permissions (role_name, permissions_json, updated_at)
-         VALUES (?, ?, NOW())
-         ON DUPLICATE KEY UPDATE permissions_json = VALUES(permissions_json), updated_at = NOW()"
+        "INSERT INTO role_permissions (role_name, permissions_json, mfa_required, updated_at)
+         VALUES (?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE permissions_json = VALUES(permissions_json), mfa_required = VALUES(mfa_required), updated_at = NOW()"
     )
     .bind(&role)
     .bind(&perms_json)
+    .bind(payload.mfa_required)
     .execute(&pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1614,22 +1813,172 @@ async fn delete_patient(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_tours(State(pool): State<DbPool>) -> Result<Json<Value>, StatusCode> {
-    let rows = sqlx::query("SELECT id, name, shift, driver_code FROM tours")
-        .fetch_all(&pool)
+async fn role_can_plan_tours(pool: &DbPool, role: &str) -> Result<bool, StatusCode> {
+    if role == "Admin" || role == "PDL" {
+        return Ok(true);
+    }
+    let row = sqlx::query("SELECT permissions_json FROM role_permissions WHERE role_name = ?")
+        .bind(role)
+        .fetch_optional(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some(r) = row {
+        let perms_raw: String = r.get("permissions_json");
+        let perms: Vec<String> = serde_json::from_str(&perms_raw).unwrap_or_default();
+        return Ok(perms.iter().any(|p| p == "touren_planen"));
+    }
+    Ok(false)
+}
+
+async fn list_tours(
+    State(pool): State<DbPool>,
+    Query(query): Query<TourAccessQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let can_plan = role_can_plan_tours(&pool, &query.actor_role).await?;
+
+    // PDL+ (touren_planen) sieht alle Touren; Mitarbeiter sehen ausschließlich eigene zugewiesene Touren
+    let rows = if can_plan {
+        sqlx::query(
+            "SELECT t.id, t.name, t.shift, t.assigned_user_id, t.driver_code, t.license_plate, t.area,
+                    CONCAT(u.first_name, ' ', u.last_name) AS assigned_name
+             FROM tours t
+             LEFT JOIN users u ON u.id = t.assigned_user_id
+             ORDER BY t.name"
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        sqlx::query(
+            "SELECT t.id, t.name, t.shift, t.assigned_user_id, t.driver_code, t.license_plate, t.area,
+                    CONCAT(u.first_name, ' ', u.last_name) AS assigned_name
+             FROM tours t
+             LEFT JOIN users u ON u.id = t.assigned_user_id
+             WHERE t.assigned_user_id = ?
+             ORDER BY t.name"
+        )
+        .bind(&query.actor_user_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
 
     let tours: Vec<Value> = rows.into_iter().map(|row| {
         json!({
             "id": row.get::<String, _>("id"),
             "name": row.get::<String, _>("name"),
             "shift": row.get::<String, _>("shift"),
+            "assigned_user_id": row.get::<Option<String>, _>("assigned_user_id"),
+            "assigned_employee_name": row.get::<Option<String>, _>("assigned_name"),
             "driver_code": row.get::<String, _>("driver_code"),
+            "license_plate": row.get::<String, _>("license_plate"),
+            "area": row.get::<String, _>("area"),
         })
     }).collect();
 
     Ok(Json(json!(tours)))
+}
+
+async fn create_tour(
+    State(pool): State<DbPool>,
+    Json(payload): Json<UpsertTourPayload>,
+) -> Result<(StatusCode, Json<Value>), StatusCode> {
+    if !role_can_plan_tours(&pool, &payload.actor_role).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let tour_id = payload.id.unwrap_or_else(|| format!("tour-{}", uuid::Uuid::new_v4()));
+    sqlx::query(
+        "INSERT INTO tours (id, name, shift, assigned_user_id, driver_code, license_plate, area)
+         VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&tour_id)
+    .bind(&payload.name)
+    .bind(&payload.shift)
+    .bind(&payload.assigned_user_id)
+    .bind(&payload.driver_code)
+    .bind(&payload.license_plate)
+    .bind(&payload.area)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let _ = sqlx::query(
+        "INSERT INTO audit_logs (username, user_role, action, resource, details, ip_address)
+         VALUES (?, ?, 'TOUR_PLAN_UPDATE', ?, ?, '127.0.0.1')"
+    )
+    .bind(&payload.actor_username)
+    .bind(&payload.actor_role)
+    .bind(format!("Tour: {}", payload.name))
+    .bind(format!("Tour erstellt (Zuweisung: {:?})", payload.assigned_user_id))
+    .execute(&pool)
+    .await;
+
+    Ok((StatusCode::CREATED, Json(json!({ "status": "created", "id": tour_id }))))
+}
+
+async fn update_tour(
+    State(pool): State<DbPool>,
+    Path(tour_id): Path<String>,
+    Json(payload): Json<UpsertTourPayload>,
+) -> Result<Json<Value>, StatusCode> {
+    if !role_can_plan_tours(&pool, &payload.actor_role).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let res = sqlx::query(
+        "UPDATE tours SET name = ?, shift = ?, assigned_user_id = ?, driver_code = ?, license_plate = ?, area = ? WHERE id = ?"
+    )
+    .bind(&payload.name)
+    .bind(&payload.shift)
+    .bind(&payload.assigned_user_id)
+    .bind(&payload.driver_code)
+    .bind(&payload.license_plate)
+    .bind(&payload.area)
+    .bind(&tour_id)
+    .execute(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let _ = sqlx::query(
+        "INSERT INTO audit_logs (username, user_role, action, resource, details, ip_address)
+         VALUES (?, ?, 'TOUR_PLAN_UPDATE', ?, ?, '127.0.0.1')"
+    )
+    .bind(&payload.actor_username)
+    .bind(&payload.actor_role)
+    .bind(format!("Tour: {}", payload.name))
+    .bind(format!("Tour aktualisiert (Zuweisung: {:?})", payload.assigned_user_id))
+    .execute(&pool)
+    .await;
+
+    Ok(Json(json!({ "status": "updated", "id": tour_id })))
+}
+
+async fn delete_tour(
+    State(pool): State<DbPool>,
+    Path(tour_id): Path<String>,
+    Query(query): Query<TourAccessQuery>,
+) -> Result<StatusCode, StatusCode> {
+    if !role_can_plan_tours(&pool, &query.actor_role).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let res = sqlx::query("DELETE FROM tours WHERE id = ?")
+        .bind(&tour_id)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 `,
   },

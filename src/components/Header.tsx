@@ -8,6 +8,7 @@ import {
   ArrowLeftRight,
   Lock,
   UserPlus,
+  Fingerprint,
 } from 'lucide-react';
 import { downloadRustDebianZip } from '../utils/zipExport';
 import { ActiveSessionUser, BenutzerRolle, RollenDefinition } from '../types/pflege';
@@ -21,9 +22,12 @@ interface HeaderProps {
   activeUser: ActiveSessionUser;
   activeSessions: ActiveSessionUser[];
   rollenConfig: Record<BenutzerRolle, RollenDefinition>;
+  hasActive2fa: boolean;
+  passkeyCount: number;
   onSwitchUser: (targetSessionId?: string) => void;
   onLogout: () => void;
   onOpenChangePassword: () => void;
+  onOpenMfaModal: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,9 +38,12 @@ export const Header: React.FC<HeaderProps> = ({
   activeUser,
   activeSessions,
   rollenConfig,
+  hasActive2fa,
+  passkeyCount,
   onSwitchUser,
   onLogout,
   onOpenChangePassword,
+  onOpenMfaModal,
 }) => {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -218,6 +225,35 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <Lock className="w-3.5 h-3.5 text-teal-700" />
                   <span>Passwort ändern</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    onOpenMfaModal();
+                  }}
+                  className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded text-left text-slate-700 hover:bg-slate-100 font-medium cursor-pointer transition-colors"
+                >
+                  <span className="flex items-center gap-2">
+                    <Fingerprint className="w-3.5 h-3.5 text-teal-700" />
+                    <span>2FA &amp; Passkeys</span>
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded text-[10px] font-mono border ${
+                      hasActive2fa || passkeyCount > 0
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-slate-100 text-slate-500 border-slate-200'
+                    }`}
+                  >
+                    {hasActive2fa
+                      ? passkeyCount > 0
+                        ? `2FA · ${passkeyCount} PK`
+                        : '2FA aktiv'
+                      : passkeyCount > 0
+                      ? `${passkeyCount} Passkey`
+                      : 'Einrichten'}
+                  </span>
                 </button>
                 {canUsersTab && (
                   <button

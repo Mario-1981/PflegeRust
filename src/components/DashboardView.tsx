@@ -24,6 +24,7 @@ interface DashboardViewProps {
   canReadKlienten: boolean;
   canEditKlienten: boolean;
   canReadTouren: boolean;
+  canPlanTouren: boolean;
   canConfirmTouren: boolean;
   canMigrate: boolean;
   canSystem: boolean;
@@ -40,6 +41,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   canReadKlienten,
   canEditKlienten,
   canReadTouren,
+  canPlanTouren,
   canConfirmTouren,
   canMigrate,
   canSystem,
@@ -129,7 +131,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <>
             <div className="p-4 bg-white border border-slate-200 rounded-lg">
               <div className="flex items-center justify-between text-slate-500 text-xs font-medium mb-1">
-                <span>Heutige Einsätze</span>
+                <span>{canPlanTouren ? 'Heutige Einsätze' : 'Meine Einsätze heute'}</span>
                 <Route className="w-4 h-4 text-slate-400" />
               </div>
               <div className="flex items-baseline gap-2">
@@ -150,14 +152,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             <div className="p-4 bg-white border border-slate-200 rounded-lg">
               <div className="flex items-center justify-between text-slate-500 text-xs font-medium mb-1">
-                <span>Touren im Dienst</span>
+                <span>{canPlanTouren ? 'Touren im Dienst' : 'Meine zugewiesenen Touren'}</span>
                 <CalendarCheck className="w-4 h-4 text-slate-400" />
               </div>
               <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
                 {touren.length}
               </div>
               <div className="text-[11px] text-slate-500 mt-1">
-                Früh- &amp; Spätschicht aktiv besetzt
+                {canPlanTouren
+                  ? 'Früh- & Spätschicht (PDL-Gesamtansicht)'
+                  : touren.length > 0
+                  ? 'Exklusiv durch PDL zugewiesen'
+                  : 'Aktuell keine Tour zugewiesen'}
               </div>
             </div>
           </>
@@ -189,15 +195,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="p-4 border-b border-slate-200 flex items-center justify-between">
                 <div>
                   <h2 className="text-sm font-bold text-slate-900">
-                    Einsatzübersicht: {activeTour?.name || 'Keine aktive Tour'}
+                    {activeTour
+                      ? `Einsatzübersicht: ${activeTour.name}`
+                      : canPlanTouren
+                      ? 'Einsatzübersicht: Keine aktive Tour'
+                      : 'Meine Einsatzübersicht: Keine Tour zugewiesen'}
                   </h2>
                   {activeTour && (
                     <div className="text-xs text-slate-500">
-                      Fahrer:{' '}
+                      Mitarbeiter:{' '}
                       <span className="font-mono text-slate-700 font-semibold">
-                        {activeTour.fahrerKuerzel}
+                        {activeTour.zugewiesenerMitarbeiterName || activeTour.fahrerKuerzel}
                       </span>{' '}
                       · Fahrzeug: {activeTour.fahrzeugKennzeichen}
+                      {canPlanTouren && !activeTour.zugewiesenerBenutzerId && (
+                        <span className="ml-2 text-[11px] text-amber-700 font-medium">
+                          (Nicht zugewiesen)
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -205,7 +220,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   onClick={() => onSelectTab('touren')}
                   className="text-xs text-teal-700 hover:text-teal-900 font-medium cursor-pointer"
                 >
-                  Alle Touren öffnen &rarr;
+                  {canPlanTouren ? 'Alle Touren öffnen →' : 'Meine Tour öffnen →'}
                 </button>
               </div>
 
@@ -294,7 +309,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 })}
                 {(!activeTour || activeTour.halte.length === 0) && (
                   <div className="p-6 text-center text-xs text-slate-400">
-                    Keine Einsätze für heute geplant.
+                    {!activeTour && !canPlanTouren
+                      ? 'Ihnen ist aktuell keine Tour zugewiesen. Bitte wenden Sie sich an die Pflegedienstleitung (PDL).'
+                      : 'Keine Einsätze für heute geplant.'}
                   </div>
                 )}
               </div>

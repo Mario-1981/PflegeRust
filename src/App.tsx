@@ -24,8 +24,10 @@ import { NewKlientModal } from './components/NewKlientModal';
 import { MariaDbConfigModal, MariaDbConfig } from './components/MariaDbConfigModal';
 import { LoginView } from './components/LoginView';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { SecurityMfaModal } from './components/SecurityMfaModal';
 import { SetupWizardView, SetupCompletionPayload } from './components/SetupWizardView';
 import { MAX_LOGIN_ATTEMPTS } from './utils/authCrypto';
+import { hasActiveSecondFactor } from './utils/mfaCrypto';
 import {
   INITIAL_ROLLEN_CONFIG,
   hasPermission,
@@ -52,6 +54,7 @@ import {
   BenutzerRolle,
   Berechtigung,
   RollenDefinition,
+  BenutzerZweiFaktorConfig,
   SsoKonfiguration,
   AuditLogEintrag,
   ActiveSessionUser,
@@ -86,6 +89,7 @@ export default function App() {
   const [switchTargetSessionId, setSwitchTargetSessionId] = useState<string | null>(null);
   const [logoutNotice, setLogoutNotice] = useState<string | null>(null);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isMfaModalOpen, setIsMfaModalOpen] = useState(false);
 
   const [selectedKlientId, setSelectedKlientId] = useState<string | null>(
     INITIAL_KLIENTEN[0]?.id || null
@@ -167,10 +171,16 @@ export default function App() {
     showToast(`Erfolgreich ${importedClients.length} Klienten und ${importedTours.length} Touren in MariaDB importiert!`);
   };
 
-  // Toggle tour stop status
+  // Toggle tour stop status (strictly enforced for assigned tour unless PDL+)
   const handleToggleHaltStatus = (tourId: string, haltId: string, notes?: string) => {
     if (!can('touren_quittieren')) {
       showToast('Keine Berechtigung zum Quittieren von Einsätzen.');
+      return;
+    }
+    const targetTour = touren.find((t) => t.id === tourId);
+    if (!targetTour) return;
+    if (!can('touren_planen') && targetTour.zugewiesenerBenutzerId !== activeUser?.id) {
+      showToast('Zugriff verweigert: Sie können nur Einsätze Ihrer eigenen zugewiesenen Tour quittieren.');
       return;
     }
     setTouren((prev) =>
@@ -197,6 +207,52 @@ export default function App() {
         };
       })
     );
+  };
+
+  // PDL+ Tour planning CRUD handlers
+  const handleAddTour = (newTour: Tour) => {
+    if (!can('touren_planen')) {
+      showToast('Keine Berechtigung: Nur PDL und Administratoren dürfen Touren anlegen.');
+      return;
+    }
+    setTouren((prev) => [...prev, newTour]);
+    addAuditLog(
+      'TOUR_PLAN_UPDATE',
+      `Tour: ${newTour.name}`,
+      `Neue Tour angelegt (${newTour.schicht}, Zuweisung: ${
+        newTour.zugewiesenerMitarbeiterName || 'Nicht zugewiesen'
+      })`
+    );
+    showToast(`Tour „${newTour.name}“ wurde angelegt.`);
+  };
+
+  const handleUpdateTour = (updatedTour: Tour, auditDetails?: string) => {
+    if (!can('touren_planen')) {
+      showToast('Keine Berechtigung: Nur PDL und Administratoren dürfen den Tourenplan anpassen.');
+      return;
+    }
+    setTouren((prev) => prev.map((t) => (t.id === updatedTour.id ? updatedTour : t)));
+    addAuditLog(
+      'TOUR_PLAN_UPDATE',
+      `Tour: ${updatedTour.name}`,
+      auditDetails || `Tourenplan aktualisiert (${updatedTour.halte.length} Haltepunkte)`
+    );
+    showToast(`Tourenplan für „${updatedTour.name}“ gespeichert.`);
+  };
+
+  const handleDeleteTour = (tourId: string) => {
+    if (!can('touren_planen')) {
+      showToast('Keine Berechtigung: Nur PDL und Administratoren dürfen Touren löschen.');
+      return;
+    }
+    const target = touren.find((t) => t.id === tourId);
+    setTouren((prev) => prev.filter((t) => t.id !== tourId));
+    addAuditLog(
+      'TOUR_PLAN_UPDATE',
+      `Tour gelöscht: ${target?.name || tourId}`,
+      'Tour vollständig aus der Einsatzdisposition entfernt'
+    );
+    showToast(`Tour „${target?.name || tourId}“ wurde entfernt.`);
   };
 
   // Add vital sign
@@ -493,6 +549,35 @@ export default function App() {
       `Berechtigungen aktualisiert (${sanitized.length} Module/Aktionen erlaubt)`
     );
     showToast(`Rollenrechte für ${existing.bezeichnung} sofort wirksam gespeichert.`);
+  };
+
+  const handleToggleRoleMfaRequired = (rolle: BenutzerRolle) => {
+    if (!can('users_verwalten')) {
+      showToast('Keine Berechtigung zum Ändern der Rollen-2FA-Pflicht.');
+      return;
+    }
+    const existing = rollenConfig[rolle];
+    if (!existing) return;
+    const nextRequired = !existing.zweiFaktorPflicht;
+    setRollenConfig((prev) => ({
+      ...prev,
+      [rolle]: {
+        ...prev[rolle],
+        zweiFaktorPflicht: nextRequired,
+      },
+    }));
+    addAuditLog(
+      'ROLE_CONFIG_CHANGE',
+      `RBAC Rolle: ${rolle}`,
+      nextRequired
+        ? `2FA-Pflicht für alle lokalen Benutzer der Rolle „${existing.bezeichnung}“ aktiviert`
+        : `2FA-Pflicht für Rolle „${existing.bezeichnung}“ aufgehoben`
+    );
+    showToast(
+      `2FA-Pflicht für Rolle „${existing.bezeichnung}“ wurde ${
+        nextRequired ? 'aktiviert' : 'deaktiviert'
+      }.`
+    );
   };
 
   const handleResetRoleToDefault = (rolle: BenutzerRolle) => {
@@ -848,14 +933,177 @@ export default function App() {
     }
   };
 
+  const handleUpdateUserMfa = (
+    userId: string,
+    nextConfig: BenutzerZweiFaktorConfig,
+    auditAction: 'MFA_SETUP' | 'PASSKEY_REGISTER' | 'PASSKEY_REMOVE',
+    auditDetails: string
+  ) => {
+    const target = benutzer.find((u) => u.id === userId);
+    setBenutzer((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, zweiFaktor: nextConfig } : u))
+    );
+    addAuditLog(
+      auditAction,
+      `2FA / Passkey: ${target?.benutzername || userId}`,
+      auditDetails
+    );
+    showToast('Sicherheitseinstellungen (2FA / Passkeys) in MariaDB gespeichert.');
+  };
+
+  const handleToggleUserMfaRequired = (userId: string) => {
+    if (!can('users_verwalten')) {
+      showToast('Keine Berechtigung zum Ändern der 2FA-Pflicht.');
+      return;
+    }
+    const target = benutzer.find((u) => u.id === userId);
+    if (!target || target.authMethode !== 'lokal') return;
+    const nextRequired = !target.zweiFaktorPflicht;
+    setBenutzer((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, zweiFaktorPflicht: nextRequired } : u))
+    );
+    addAuditLog(
+      'MFA_SETUP',
+      `Benutzer: ${target.benutzername}`,
+      nextRequired
+        ? '2FA-Pflicht für lokales Konto aktiviert'
+        : '2FA-Pflicht für lokales Konto aufgehoben'
+    );
+    showToast(
+      `2FA-Pflicht für ${target.benutzername} wurde ${nextRequired ? 'aktiviert' : 'deaktiviert'}.`
+    );
+  };
+
+  const handleAdminResetUserMfa = (userId: string) => {
+    if (!can('users_verwalten')) {
+      showToast('Keine Berechtigung zum Zurücksetzen von 2FA.');
+      return;
+    }
+    const target = benutzer.find((u) => u.id === userId);
+    if (!target || target.authMethode !== 'lokal') return;
+    setBenutzer((prev) =>
+      prev.map((u) =>
+        u.id === userId
+          ? {
+              ...u,
+              zweiFaktor: {
+                aktiviert: false,
+                totpAktiviert: false,
+                sicherheitsSchluessel: [],
+                passkeys: [],
+              },
+            }
+          : u
+      )
+    );
+    addAuditLog(
+      'MFA_SETUP',
+      `Benutzer: ${target.benutzername}`,
+      '2FA-Faktoren (TOTP, Sicherheitssticks) und Passkeys durch Administrator zurückgesetzt'
+    );
+    showToast(`2FA & Passkeys für ${target.benutzername} wurden zurückgesetzt.`);
+  };
+
+  const handleMfaVerified = (user: AppBenutzer, details: string, isPasskey = false) => {
+    addAuditLog(
+      isPasskey ? 'PASSKEY_LOGIN' : 'MFA_VERIFIED',
+      isPasskey ? 'WebAuthn Passkey' : 'MariaDB 2FA (TOTP / FIDO2)',
+      details,
+      { benutzer: user.benutzername, rolle: user.rolle }
+    );
+  };
+
+  const handleMfaFailed = (user: AppBenutzer, details: string) => {
+    const nextAttempts = (user.fehlversuche || 0) + 1;
+    const isLastActiveAdmin =
+      user.aktiv &&
+      user.rolle === 'Admin' &&
+      benutzer.filter((u) => u.aktiv && u.rolle === 'Admin').length <= 1;
+    const shouldLock = nextAttempts >= MAX_LOGIN_ATTEMPTS && !isLastActiveAdmin;
+
+    setBenutzer((prev) =>
+      prev.map((u) =>
+        u.id === user.id
+          ? {
+              ...u,
+              fehlversuche: nextAttempts,
+              aktiv: shouldLock ? false : u.aktiv,
+            }
+          : u
+      )
+    );
+    addAuditLog(
+      'MFA_FAILED',
+      'MariaDB 2FA / Passkey',
+      shouldLock
+        ? `${details} (${nextAttempts}/${MAX_LOGIN_ATTEMPTS}) – Konto automatisch gesperrt`
+        : `${details} (Fehlversuch ${nextAttempts}/${MAX_LOGIN_ATTEMPTS})`,
+      { benutzer: user.benutzername, rolle: user.rolle }
+    );
+  };
+
+  const handleConsumeBackupCode = (userId: string, remainingHashes: string[]) => {
+    setBenutzer((prev) =>
+      prev.map((u) =>
+        u.id === userId && u.zweiFaktor
+          ? {
+              ...u,
+              zweiFaktor: {
+                ...u.zweiFaktor,
+                backupCodeHashes: remainingHashes,
+              },
+            }
+          : u
+      )
+    );
+  };
+
+  const handleRecordCredentialUsage = (
+    userId: string,
+    kind: 'security_key' | 'passkey',
+    credentialId: string
+  ) => {
+    const nowStamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    setBenutzer((prev) =>
+      prev.map((u) => {
+        if (u.id !== userId || !u.zweiFaktor) return u;
+        if (kind === 'security_key') {
+          return {
+            ...u,
+            zweiFaktor: {
+              ...u.zweiFaktor,
+              sicherheitsSchluessel: u.zweiFaktor.sicherheitsSchluessel.map((k) =>
+                k.credentialId === credentialId
+                  ? { ...k, signCount: k.signCount + 1, zuletztVerwendet: nowStamp }
+                  : k
+              ),
+            },
+          };
+        }
+        return {
+          ...u,
+          zweiFaktor: {
+            ...u.zweiFaktor,
+            passkeys: u.zweiFaktor.passkeys.map((p) =>
+              p.credentialId === credentialId
+                ? { ...p, signCount: p.signCount + 1, zuletztVerwendet: nowStamp }
+                : p
+            ),
+          },
+        };
+      })
+    );
+  };
+
   const handleSwitchUser = (targetSessionId?: string) => {
     setIsChangePasswordOpen(false);
+    setIsMfaModalOpen(false);
     setSwitchTargetSessionId(targetSessionId || null);
     setActiveUser(null);
     setLogoutNotice(
       targetSessionId
-        ? 'Bitte bestätigen Sie den Benutzerwechsel mit Ihrem Passwort.'
-        : 'Aktive Sitzung pausiert. Melden Sie sich als weiterer Benutzer an oder entsperren Sie eine angemeldete Sitzung mit Passwort.'
+        ? 'Bitte bestätigen Sie den Benutzerwechsel mit Passwort/2FA oder Ihrem Passkey.'
+        : 'Aktive Sitzung pausiert. Melden Sie sich als weiterer Benutzer an oder entsperren Sie eine angemeldete Sitzung.'
     );
   };
 
@@ -890,8 +1138,9 @@ export default function App() {
     setSwitchTargetSessionId(null);
     setActiveUser(null);
     setIsChangePasswordOpen(false);
+    setIsMfaModalOpen(false);
     setLogoutNotice(
-      `Sie wurden als ${prevName} vollständig abgemeldet. Für eine erneute Anmeldung sind Benutzername und Passwort erforderlich.`
+      `Sie wurden als ${prevName} vollständig abgemeldet. Für eine erneute Anmeldung sind Passwort/2FA oder Ihr Passkey erforderlich.`
     );
   };
 
@@ -936,6 +1185,13 @@ export default function App() {
       rolle: 'Admin',
       aktiv: true,
       fehlversuche: 0,
+      zweiFaktorPflicht: false,
+      zweiFaktor: {
+        aktiviert: false,
+        totpAktiviert: false,
+        sicherheitsSchluessel: [],
+        passkeys: [],
+      },
     };
 
     const fullName = `${firstAdmin.vorname} ${firstAdmin.name}`;
@@ -1026,16 +1282,41 @@ export default function App() {
         onLogin={handleLogin}
         onEndSession={handleEndSession}
         onFailedLogin={handleFailedLogin}
+        onMfaVerified={handleMfaVerified}
+        onMfaFailed={handleMfaFailed}
+        onConsumeBackupCode={handleConsumeBackupCode}
+        onRecordCredentialUsage={handleRecordCredentialUsage}
         onCompleteForcedPasswordChange={handleCompleteForcedPasswordChange}
       />
     );
   }
 
   const currentUserRecord = benutzer.find((u) => u.id === activeUser.id) || null;
+  const currentHas2fa = Boolean(currentUserRecord && hasActiveSecondFactor(currentUserRecord));
+  const currentPasskeyCount = currentUserRecord?.zweiFaktor?.passkeys.length || 0;
+  const isRoleMfaRequired = Boolean(
+    currentUserRecord && rollenConfig[currentUserRecord.rolle]?.zweiFaktorPflicht
+  );
+  const isUserMfaRequired = Boolean(currentUserRecord?.zweiFaktorPflicht);
+  const mfaRequiredByPolicy = Boolean(
+    currentUserRecord &&
+      currentUserRecord.authMethode === 'lokal' &&
+      (isRoleMfaRequired || isUserMfaRequired)
+  );
+  const mfaPolicyReason = isRoleMfaRequired
+    ? `Rolle „${rollenConfig[activeUser.role]?.bezeichnung || activeUser.role}“`
+    : isUserMfaRequired
+    ? 'Benutzer-Richtlinie'
+    : undefined;
+  const mustEnrollMfa = Boolean(mfaRequiredByPolicy && !currentHas2fa);
   const effectiveTab = canAccessTab(activeUser.role, currentTab, rollenConfig)
     ? currentTab
     : getFirstAllowedTab(activeUser.role, rollenConfig);
   const hasEffectiveTabAccess = canAccessTab(activeUser.role, effectiveTab, rollenConfig);
+  const canPlanTouren = can('touren_planen');
+  const visibleTouren = canPlanTouren
+    ? touren
+    : touren.filter((t) => t.zugewiesenerBenutzerId === activeUser.id);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-100 font-sans text-slate-900">
@@ -1058,9 +1339,12 @@ export default function App() {
         activeUser={activeUser}
         activeSessions={activeSessions}
         rollenConfig={rollenConfig}
+        hasActive2fa={currentHas2fa}
+        passkeyCount={currentPasskeyCount}
         onSwitchUser={handleSwitchUser}
         onLogout={handleLogout}
         onOpenChangePassword={() => setIsChangePasswordOpen(true)}
+        onOpenMfaModal={() => setIsMfaModalOpen(true)}
       />
 
       {/* Main Layout Area */}
@@ -1070,7 +1354,7 @@ export default function App() {
           currentTab={effectiveTab}
           onSelectTab={handleSelectTab}
           clientCount={klienten.length}
-          tourCount={touren.length}
+          tourCount={visibleTouren.length}
           userCount={benutzer.length}
           activeAddonCount={addons.filter((a) => a.aktiv).length}
           einrichtung={einrichtung}
@@ -1079,6 +1363,9 @@ export default function App() {
             if (can('system_technik')) setIsMariaDbModalOpen(true);
           }}
           activeUser={activeUser}
+          hasActive2fa={currentHas2fa}
+          passkeyCount={currentPasskeyCount}
+          onOpenMfaModal={() => setIsMfaModalOpen(true)}
           onSwitchUser={() => handleSwitchUser()}
           onLogout={handleLogout}
         />
@@ -1103,7 +1390,7 @@ export default function App() {
             {hasEffectiveTabAccess && effectiveTab === 'dashboard' && (
               <DashboardView
                 klienten={klienten}
-                touren={touren}
+                touren={visibleTouren}
                 onSelectTab={handleSelectTab}
                 onSelectKlient={setSelectedKlientId}
                 onOpenNewKlientModal={() => {
@@ -1116,6 +1403,7 @@ export default function App() {
                 canReadKlienten={can('klienten_lesen')}
                 canEditKlienten={can('klienten_bearbeiten')}
                 canReadTouren={can('touren_lesen')}
+                canPlanTouren={canPlanTouren}
                 canConfirmTouren={can('touren_quittieren')}
                 canMigrate={can('migration')}
                 canSystem={can('system_technik')}
@@ -1125,7 +1413,7 @@ export default function App() {
             {hasEffectiveTabAccess && effectiveTab === 'klienten' && (
               <KlientenView
                 klienten={klienten}
-                touren={touren}
+                touren={visibleTouren}
                 selectedKlientId={selectedKlientId}
                 canEditKlienten={can('klienten_bearbeiten')}
                 canDocumentCare={can('pflege_dokumentieren')}
@@ -1149,11 +1437,16 @@ export default function App() {
 
             {hasEffectiveTabAccess && effectiveTab === 'touren' && (
               <TourenView
-                touren={touren}
+                touren={visibleTouren}
                 klienten={klienten}
+                benutzer={benutzer}
+                canPlanTouren={canPlanTouren}
                 canConfirmTouren={can('touren_quittieren')}
                 canReadKlienten={can('klienten_lesen')}
                 onToggleHaltStatus={handleToggleHaltStatus}
+                onAddTour={handleAddTour}
+                onUpdateTour={handleUpdateTour}
+                onDeleteTour={handleDeleteTour}
                 onSelectKlient={setSelectedKlientId}
                 onSelectTab={handleSelectTab}
               />
@@ -1221,6 +1514,10 @@ export default function App() {
                 onCreateRole={handleCreateRole}
                 onDeleteRole={handleDeleteRole}
                 onResetUserPassword={handleResetUserPassword}
+                onToggleUserMfaRequired={handleToggleUserMfaRequired}
+                onAdminResetUserMfa={handleAdminResetUserMfa}
+                onToggleRoleMfaRequired={handleToggleRoleMfaRequired}
+                onOpenOwnMfaModal={() => setIsMfaModalOpen(true)}
               />
             )}
 
@@ -1267,6 +1564,18 @@ export default function App() {
         currentUser={currentUserRecord}
         onClose={() => setIsChangePasswordOpen(false)}
         onSavePassword={handleSelfPasswordChange}
+      />
+
+      {/* 2FA (TOTP / FIDO2 Security Key) & Passkey Management Modal */}
+      <SecurityMfaModal
+        isOpen={isMfaModalOpen || mustEnrollMfa}
+        currentUser={currentUserRecord}
+        einrichtungName={einrichtung.name}
+        forceEnrollment={mustEnrollMfa}
+        mfaRequiredByPolicy={mfaRequiredByPolicy}
+        mfaPolicyReason={mfaPolicyReason}
+        onClose={() => setIsMfaModalOpen(false)}
+        onUpdateUserMfa={handleUpdateUserMfa}
       />
     </div>
   );

@@ -17,6 +17,9 @@ import {
   Check,
   X,
   Trash2,
+  Smartphone,
+  Usb,
+  Fingerprint,
 } from 'lucide-react';
 import {
   AppBenutzer,
@@ -59,6 +62,10 @@ interface UserManagementViewProps {
     hash: string,
     forceChange: boolean
   ) => void;
+  onToggleUserMfaRequired: (userId: string) => void;
+  onAdminResetUserMfa: (userId: string) => void;
+  onToggleRoleMfaRequired: (rolle: BenutzerRolle) => void;
+  onOpenOwnMfaModal: () => void;
 }
 
 export const UserManagementView: React.FC<UserManagementViewProps> = ({
@@ -78,6 +85,10 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   onCreateRole,
   onDeleteRole,
   onResetUserPassword,
+  onToggleUserMfaRequired,
+  onAdminResetUserMfa,
+  onToggleRoleMfaRequired,
+  onOpenOwnMfaModal,
 }) => {
   const roleKeys = Object.keys(rollenConfig);
   const activeAdminCount = benutzer.filter((u) => u.aktiv && u.rolle === 'Admin').length;
@@ -96,6 +107,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const [customRoleKeyEdited, setCustomRoleKeyEdited] = useState(false);
   const [customRoleDesc, setCustomRoleDesc] = useState('');
   const [customRoleTemplate, setCustomRoleTemplate] = useState<string>('empty');
+  const [customRoleMfaRequired, setCustomRoleMfaRequired] = useState(false);
   const [customRoleError, setCustomRoleError] = useState<string | null>(null);
   const [confirmDeleteRole, setConfirmDeleteRole] = useState<BenutzerRolle | null>(null);
 
@@ -128,7 +140,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const [newInitialPassword, setNewInitialPassword] = useState('');
   const [newInitialPasswordConfirm, setNewInitialPasswordConfirm] = useState('');
   const [newForceChange, setNewForceChange] = useState(true);
+  const [newMfaRequired, setNewMfaRequired] = useState(false);
   const [newUserError, setNewUserError] = useState<string | null>(null);
+  const [confirmResetMfaUserId, setConfirmResetMfaUserId] = useState<string | null>(null);
 
   // Admin password reset modal state
   const [resetTargetUser, setResetTargetUser] = useState<AppBenutzer | null>(null);
@@ -225,6 +239,16 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       passwortHash: hash,
       fehlversuche: 0,
       mussPasswortAendern: newAuthMethod === 'lokal' ? newForceChange : false,
+      zweiFaktorPflicht: newAuthMethod === 'lokal' ? newMfaRequired : false,
+      zweiFaktor:
+        newAuthMethod === 'lokal'
+          ? {
+              aktiviert: false,
+              totpAktiviert: false,
+              sicherheitsSchluessel: [],
+              passkeys: [],
+            }
+          : undefined,
     };
 
     onAddBenutzer(newUser);
@@ -236,6 +260,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
     setNewInitialPassword('');
     setNewInitialPasswordConfirm('');
     setNewForceChange(true);
+    setNewMfaRequired(false);
     setNewUserError(null);
   };
 
@@ -297,6 +322,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       beschreibung: customRoleDesc.trim(),
       berechtigungen: templatePerms,
       istStandard: false,
+      zweiFaktorPflicht: customRoleMfaRequired,
     });
 
     if (created) {
@@ -307,6 +333,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       setCustomRoleKeyEdited(false);
       setCustomRoleDesc('');
       setCustomRoleTemplate('empty');
+      setCustomRoleMfaRequired(false);
       setCustomRoleError(null);
     }
   };
@@ -536,15 +563,66 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                         </select>
                       </td>
                       <td className="p-3">
-                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-700">
-                          <KeyRound className="w-3 h-3 text-teal-700" />
-                          <span>{getAuthBadge(user.authMethode)}</span>
-                        </span>
-                        {user.ssoSubjectId && (
-                          <div className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]">
-                            {user.ssoSubjectId}
-                          </div>
-                        )}
+                        <div className="space-y-1">
+                          <span className="inline-flex items-center gap-1 text-[11px] text-slate-700">
+                            <KeyRound className="w-3 h-3 text-teal-700" />
+                            <span>{getAuthBadge(user.authMethode)}</span>
+                          </span>
+                          {user.authMethode === 'lokal' ? (
+                            <div className="flex flex-wrap items-center gap-1">
+                              {user.zweiFaktor?.totpAktiviert && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  <Smartphone className="w-2.5 h-2.5" />
+                                  2FA App
+                                </span>
+                              )}
+                              {(user.zweiFaktor?.sicherheitsSchluessel.length || 0) > 0 && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-medium bg-teal-50 text-teal-800 border border-teal-200">
+                                  <Usb className="w-2.5 h-2.5" />
+                                  Stick ({user.zweiFaktor!.sicherheitsSchluessel.length})
+                                </span>
+                              )}
+                              {(user.zweiFaktor?.passkeys.length || 0) > 0 && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-medium bg-indigo-50 text-indigo-800 border border-indigo-200">
+                                  <Fingerprint className="w-2.5 h-2.5" />
+                                  Passkey ({user.zweiFaktor!.passkeys.length})
+                                </span>
+                              )}
+                              {!user.zweiFaktor?.totpAktiviert &&
+                                (user.zweiFaktor?.sicherheitsSchluessel.length || 0) === 0 && (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-100 text-slate-500 border border-slate-200">
+                                    Ohne 2FA
+                                  </span>
+                                )}
+                              {rollenConfig[user.rolle]?.zweiFaktorPflicht && (
+                                <span
+                                  title={`Durch Rolle „${rollenConfig[user.rolle]?.bezeichnung || user.rolle}“ vorgeschrieben`}
+                                  className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-50 text-purple-800 border border-purple-200"
+                                >
+                                  2FA-Pflicht (Rolle)
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onToggleUserMfaRequired(user.id)}
+                                title="Zusätzliche benutzerbezogene 2FA-Pflicht für dieses lokale Konto umschalten"
+                                className={`px-1.5 py-0.2 rounded text-[10px] font-semibold border cursor-pointer transition-colors ${
+                                  user.zweiFaktorPflicht
+                                    ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                                    : 'bg-white text-slate-400 border-slate-200 hover:text-slate-700 hover:border-slate-300'
+                                }`}
+                              >
+                                {user.zweiFaktorPflicht ? '2FA-Pflicht (Nutzer)' : '+ 2FA-Pflicht'}
+                              </button>
+                            </div>
+                          ) : (
+                            user.ssoSubjectId && (
+                              <div className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]">
+                                {user.ssoSubjectId}
+                              </div>
+                            )
+                          )}
+                        </div>
                       </td>
                       <td className="p-3 text-slate-600">{user.abteilung}</td>
                       <td className="p-3">
@@ -571,6 +649,50 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                         {user.letzterLogin}
                       </td>
                       <td className="p-3 text-right whitespace-nowrap">
+                        {isSelf && user.authMethode === 'lokal' && (
+                          <button
+                            type="button"
+                            onClick={onOpenOwnMfaModal}
+                            title="Eigene Authenticator-App, Sicherheitssticks und Passkeys einrichten"
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-200 transition-colors cursor-pointer mr-1"
+                          >
+                            <Fingerprint className="w-3 h-3" />
+                            <span>2FA / Passkey</span>
+                          </button>
+                        )}
+                        {user.authMethode === 'lokal' &&
+                          (user.zweiFaktor?.aktiviert ||
+                            (user.zweiFaktor?.passkeys.length || 0) > 0) &&
+                          (confirmResetMfaUserId === user.id ? (
+                            <span className="inline-flex items-center gap-1 mr-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onAdminResetUserMfa(user.id);
+                                  setConfirmResetMfaUserId(null);
+                                }}
+                                className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-600 text-white hover:bg-amber-700 cursor-pointer"
+                              >
+                                2FA löschen?
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmResetMfaUserId(null)}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 cursor-pointer"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmResetMfaUserId(user.id)}
+                              title="2FA & Passkeys bei Geräteverlust zurücksetzen"
+                              className="text-[11px] font-medium px-2 py-1 rounded text-amber-800 hover:bg-amber-50 transition-colors cursor-pointer mr-1"
+                            >
+                              2FA-Reset
+                            </button>
+                          ))}
                         <button
                           type="button"
                           onClick={() => {
@@ -639,6 +761,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   setCustomRoleKeyEdited(false);
                   setCustomRoleDesc('');
                   setCustomRoleTemplate('empty');
+                  setCustomRoleMfaRequired(false);
                   setCustomRoleError(null);
                   setShowAddRoleModal(true);
                 }}
@@ -666,7 +789,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                     }`}
                   >
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${getRoleBadge(
                             r
@@ -677,6 +800,11 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                         <span className="text-[11px] text-slate-500 font-mono">
                           {userCountInRole} Nutzer
                         </span>
+                        {def.zweiFaktorPflicht && (
+                          <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                            2FA-Pflicht
+                          </span>
+                        )}
                         {!def.istStandard && !isStandardRolle(r) && (
                           <span className="text-[10px] font-medium text-cyan-700">
                             · Eigene Rolle
@@ -727,6 +855,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   if (permId === 'touren_quittieren' && !next.includes('touren_lesen')) {
                     next.push('touren_lesen');
                   }
+                  if (permId === 'touren_planen' && !next.includes('touren_lesen')) {
+                    next.push('touren_lesen');
+                  }
                   if (permId === 'sis_bearbeiten' && !next.includes('sis_lesen')) {
                     next.push('sis_lesen');
                   }
@@ -744,7 +875,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                     );
                   }
                   if (permId === 'touren_lesen') {
-                    next = next.filter((p) => p !== 'touren_quittieren');
+                    next = next.filter(
+                      (p) => p !== 'touren_quittieren' && p !== 'touren_planen'
+                    );
                   }
                   if (permId === 'sis_lesen') {
                     next = next.filter((p) => p !== 'sis_bearbeiten');
@@ -829,6 +962,47 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   </div>
 
                   <div className="p-5 space-y-5">
+                    {/* Role-level 2FA Enforcement Toggle */}
+                    <label
+                      className={`p-3.5 rounded-lg border flex items-start justify-between gap-3 cursor-pointer transition-colors ${
+                        activeDef.zweiFaktorPflicht
+                          ? 'bg-amber-50/70 border-amber-300'
+                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100/70'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(activeDef.zweiFaktorPflicht)}
+                          onChange={() => onToggleRoleMfaRequired(activeRoleKey)}
+                          className="mt-0.5 rounded accent-teal-700 w-4 h-4 shrink-0"
+                        />
+                        <div className="space-y-0.5">
+                          <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                            <Fingerprint className="w-3.5 h-3.5 text-teal-700" />
+                            <span>
+                              2-Faktor-Authentifizierung (2FA) für diese Rolle erzwingen
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 leading-snug">
+                            Alle lokalen Benutzer mit der Rolle{' '}
+                            <strong>{activeDef.bezeichnung}</strong> müssen zwingend eine
+                            Authenticator-App (TOTP) oder einen FIDO2-Sicherheitsstick einrichten.
+                            Fehlt 2FA, wird die Einrichtung sofort erzwungen.
+                          </p>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border shrink-0 ${
+                          activeDef.zweiFaktorPflicht
+                            ? 'bg-amber-100 text-amber-900 border-amber-300'
+                            : 'bg-white text-slate-500 border-slate-200'
+                        }`}
+                      >
+                        {activeDef.zweiFaktorPflicht ? 'Pflicht aktiv' : 'Optional'}
+                      </span>
+                    </label>
+
                     {groups.map((group) => {
                       const items = ALLE_BERECHTIGUNGEN.filter((b) => b.gruppe === group);
                       return (
@@ -1247,7 +1421,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   <td className="p-3">
                     <span
                       className={`font-bold ${
-                        log.aktion === 'LOGIN_FAILED'
+                        log.aktion === 'LOGIN_FAILED' || log.aktion === 'MFA_FAILED'
                           ? 'text-rose-700'
                           : log.aktion === 'SYSTEM_SETUP' ||
                             log.aktion === 'ROLE_CHANGE' ||
@@ -1258,9 +1432,15 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                             log.aktion === 'ADDON_UPDATE' ||
                             log.aktion === 'ADDON_REMOVE'
                           ? 'text-purple-800'
-                          : log.aktion === 'TI_DISPATCH'
-                          ? 'text-cyan-800'
-                          : log.aktion === 'PASSWORD_CHANGE'
+                          : log.aktion === 'TI_DISPATCH' ||
+                            log.aktion === 'PASSKEY_LOGIN' ||
+                            log.aktion === 'PASSKEY_REGISTER' ||
+                            log.aktion === 'MFA_VERIFIED'
+                          ? 'text-emerald-700'
+                          : log.aktion === 'PASSWORD_CHANGE' ||
+                            log.aktion === 'MFA_SETUP' ||
+                            log.aktion === 'PASSKEY_REMOVE' ||
+                            log.aktion === 'TOUR_PLAN_UPDATE'
                           ? 'text-amber-700'
                           : log.aktion === 'LOGOUT'
                           ? 'text-slate-600'
@@ -1381,6 +1561,19 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   Nach dem Anlegen können Sie alle Einzelrechte direkt in der Rechte-Matrix anpassen.
                 </span>
               </div>
+
+              <label className="flex items-start gap-2 p-2.5 rounded-md bg-slate-50 border border-slate-200 text-[11px] text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={customRoleMfaRequired}
+                  onChange={(e) => setCustomRoleMfaRequired(e.target.checked)}
+                  className="mt-0.5 rounded accent-teal-700"
+                />
+                <span>
+                  <strong>2FA-Pflicht für diese Rolle erzwingen</strong> (lokale Benutzer müssen
+                  Authenticator-App oder Sicherheitsstick nutzen)
+                </span>
+              </label>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
                 <button
@@ -1574,15 +1767,26 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                 </div>
 
                 {newAuthMethod === 'lokal' && (
-                  <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newForceChange}
-                      onChange={(e) => setNewForceChange(e.target.checked)}
-                      className="rounded text-teal-700"
-                    />
-                    <span>Passwortänderung beim ersten Login erzwingen</span>
-                  </label>
+                  <div className="space-y-1.5">
+                    <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newForceChange}
+                        onChange={(e) => setNewForceChange(e.target.checked)}
+                        className="rounded text-teal-700"
+                      />
+                      <span>Passwortänderung beim ersten Login erzwingen</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newMfaRequired}
+                        onChange={(e) => setNewMfaRequired(e.target.checked)}
+                        className="rounded text-teal-700"
+                      />
+                      <span>2FA-Pflicht aktivieren (Authenticator-App oder Sicherheitsstick beim Login einrichten)</span>
+                    </label>
+                  </div>
                 )}
               </div>
 

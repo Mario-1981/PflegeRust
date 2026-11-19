@@ -41,7 +41,13 @@ export const ALLE_BERECHTIGUNGEN: BerechtigungMeta[] = [
     id: 'touren_quittieren',
     label: 'Tourenhalte quittieren',
     gruppe: 'Pflege & Klienten',
-    beschreibung: 'Einsätze als erledigt markieren und Übergabenotizen erfassen',
+    beschreibung: 'Einsätze der eigenen Tour als erledigt markieren und Übergabenotizen erfassen',
+  },
+  {
+    id: 'touren_planen',
+    label: 'Tourenplan bearbeiten & zuweisen (PDL+)',
+    gruppe: 'Pflege & Klienten',
+    beschreibung: 'Alle Touren einsehen, anlegen, Haltepunkte planen und Mitarbeitern zuweisen',
   },
   {
     id: 'sis_lesen',
@@ -170,6 +176,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<string, RollenDefinition> = {
       'klienten_bearbeiten',
       'touren_lesen',
       'touren_quittieren',
+      'touren_planen',
       'sis_lesen',
       'sis_bearbeiten',
       'medikation_lesen',
