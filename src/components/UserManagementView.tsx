@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   Check,
   X,
+  Trash2,
 } from 'lucide-react';
 import {
   AppBenutzer,
@@ -30,7 +31,11 @@ import {
   validatePasswordPolicy,
   MAX_LOGIN_ATTEMPTS,
 } from '../utils/authCrypto';
-import { ALLE_BERECHTIGUNGEN, ALLE_ROLLEN } from '../data/rbacConfig';
+import {
+  ALLE_BERECHTIGUNGEN,
+  generateRoleKey,
+  isStandardRolle,
+} from '../data/rbacConfig';
 
 interface UserManagementViewProps {
   benutzer: AppBenutzer[];
@@ -45,6 +50,8 @@ interface UserManagementViewProps {
   onUpdateUserRole: (userId: string, newRole: BenutzerRolle) => void;
   onUpdateRolePermissions: (rolle: BenutzerRolle, berechtigungen: Berechtigung[]) => void;
   onResetRoleToDefault: (rolle: BenutzerRolle) => void;
+  onCreateRole: (newRole: RollenDefinition) => boolean;
+  onDeleteRole: (rolle: BenutzerRolle) => boolean;
   onResetUserPassword: (
     userId: string,
     salt: string,
@@ -66,8 +73,11 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   onUpdateUserRole,
   onUpdateRolePermissions,
   onResetRoleToDefault,
+  onCreateRole,
+  onDeleteRole,
   onResetUserPassword,
 }) => {
+  const roleKeys = Object.keys(rollenConfig);
   const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'sso' | 'audit'>(
     canManageUsers ? 'users' : 'audit'
   );
@@ -75,6 +85,20 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRoleFilter, setSelectedRoleFilter] = useState<string>('all');
   const [showAddUserModal, setShowAddUserModal] = useState(false);
+
+  // Create custom role modal state
+  const [showAddRoleModal, setShowAddRoleModal] = useState(false);
+  const [customRoleName, setCustomRoleName] = useState('');
+  const [customRoleKey, setCustomRoleKey] = useState('');
+  const [customRoleKeyEdited, setCustomRoleKeyEdited] = useState(false);
+  const [customRoleDesc, setCustomRoleDesc] = useState('');
+  const [customRoleTemplate, setCustomRoleTemplate] = useState<string>('empty');
+  const [customRoleError, setCustomRoleError] = useState<string | null>(null);
+  const [confirmDeleteRole, setConfirmDeleteRole] = useState<BenutzerRolle | null>(null);
+
+  // New SSO mapping inline state
+  const [newSsoGroup, setNewSsoGroup] = useState('');
+  const [newSsoTargetRole, setNewSsoTargetRole] = useState<BenutzerRolle>('Pflegefachkraft');
 
   // SSO form local state
   const [ssoForm, setSsoForm] = useState<SsoKonfiguration>(ssoConfig);
@@ -239,6 +263,51 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
     setResetError(null);
   };
 
+  const handleCreateRoleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const label = customRoleName.trim();
+    const key = (customRoleKeyEdited ? customRoleKey.trim() : generateRoleKey(label)).trim();
+
+    if (label.length < 2) {
+      setCustomRoleError('Bitte geben Sie eine Rollenbezeichnung mit mindestens 2 Zeichen ein.');
+      return;
+    }
+    if (!/^[A-Za-z0-9_-]{2,32}$/.test(key)) {
+      setCustomRoleError(
+        'Der Rollen-Schlüssel darf nur Buchstaben (A-Z), Ziffern, Unterstrich (_) oder Bindestrich (-) enthalten (2–32 Zeichen).'
+      );
+      return;
+    }
+    if (rollenConfig[key]) {
+      setCustomRoleError(`Eine Rolle mit dem Schlüssel „${key}“ existiert bereits.`);
+      return;
+    }
+
+    const templatePerms: Berechtigung[] =
+      customRoleTemplate === 'empty'
+        ? ['dashboard']
+        : [...(rollenConfig[customRoleTemplate]?.berechtigungen || ['dashboard'])];
+
+    const created = onCreateRole({
+      rolle: key,
+      bezeichnung: label,
+      beschreibung: customRoleDesc.trim(),
+      berechtigungen: templatePerms,
+      istStandard: false,
+    });
+
+    if (created) {
+      setSelectedEditRole(key);
+      setShowAddRoleModal(false);
+      setCustomRoleName('');
+      setCustomRoleKey('');
+      setCustomRoleKeyEdited(false);
+      setCustomRoleDesc('');
+      setCustomRoleTemplate('empty');
+      setCustomRoleError(null);
+    }
+  };
+
   const getRoleBadge = (rolle: BenutzerRolle) => {
     switch (rolle) {
       case 'Admin':
@@ -253,8 +322,10 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
         return 'bg-amber-100 text-amber-800 border-amber-200';
       case 'Verwaltung_Abrechnung':
         return 'bg-indigo-100 text-indigo-800 border-indigo-200';
-      default:
+      case 'Datenschutz_QM':
         return 'bg-slate-100 text-slate-700 border-slate-200';
+      default:
+        return 'bg-cyan-50 text-cyan-800 border-cyan-200';
     }
   };
 
@@ -310,7 +381,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Rollen &amp; Rechte
+                Rollen &amp; Rechte ({roleKeys.length})
               </button>
               <button
                 onClick={() => setActiveTab('sso')}
@@ -362,13 +433,11 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                 className="p-1.5 bg-slate-50 border border-slate-300 rounded-md font-medium text-slate-800"
               >
                 <option value="all">Alle Rollen</option>
-                <option value="Admin">Administrator</option>
-                <option value="PDL">Pflegedienstleitung (PDL)</option>
-                <option value="Wohnbereichsleitung">Wohnbereichsleitung</option>
-                <option value="Pflegefachkraft">Pflegefachkraft</option>
-                <option value="Pflegehelfer">Pflegehelfer</option>
-                <option value="Verwaltung_Abrechnung">Verwaltung &amp; Abrechnung</option>
-                <option value="Datenschutz_QM">Datenschutz &amp; QM</option>
+                {roleKeys.map((r) => (
+                  <option key={r} value={r}>
+                    {rollenConfig[r]?.bezeichnung || r}
+                  </option>
+                ))}
               </select>
 
               <button
@@ -419,7 +488,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                           user.rolle
                         )}`}
                       >
-                        {ALLE_ROLLEN.map((r) => (
+                        {roleKeys.map((r) => (
                           <option key={r} value={r} className="bg-white text-slate-900">
                             {rollenConfig[r]?.bezeichnung || r}
                           </option>
@@ -500,17 +569,35 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
           {/* Role Selector List (4 cols) */}
           <div className="lg:col-span-4 bg-white border border-slate-200 rounded-lg overflow-hidden">
-            <div className="p-4 bg-slate-50 border-b border-slate-200">
-              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                <SlidersHorizontal className="w-4 h-4 text-teal-700" />
-                <span>Rollen auswählen</span>
-              </h2>
-              <p className="text-[11px] text-slate-500 mt-0.5">
-                Änderungen wirken sofort für alle Benutzer dieser Rolle.
-              </p>
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-start justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <SlidersHorizontal className="w-4 h-4 text-teal-700" />
+                  <span>Rollen auswählen</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Änderungen wirken sofort für alle Benutzer dieser Rolle.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomRoleName('');
+                  setCustomRoleKey('');
+                  setCustomRoleKeyEdited(false);
+                  setCustomRoleDesc('');
+                  setCustomRoleTemplate('empty');
+                  setCustomRoleError(null);
+                  setShowAddRoleModal(true);
+                }}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md transition-colors cursor-pointer shrink-0 shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Neue Rolle</span>
+              </button>
             </div>
             <div className="divide-y divide-slate-100">
-              {ALLE_ROLLEN.map((r) => {
+              {roleKeys.map((r) => {
                 const def = rollenConfig[r];
                 const isSelected = selectedEditRole === r;
                 const userCountInRole = benutzer.filter((u) => u.rolle === r).length;
@@ -518,13 +605,16 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   <button
                     key={r}
                     type="button"
-                    onClick={() => setSelectedEditRole(r)}
+                    onClick={() => {
+                      setSelectedEditRole(r);
+                      setConfirmDeleteRole(null);
+                    }}
                     className={`w-full p-3.5 text-left transition-colors cursor-pointer flex items-center justify-between gap-2 ${
                       isSelected ? 'bg-teal-50/70 border-l-3 border-l-teal-700' : 'hover:bg-slate-50'
                     }`}
                   >
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${getRoleBadge(
                             r
@@ -535,6 +625,11 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                         <span className="text-[11px] text-slate-500 font-mono">
                           {userCountInRole} Nutzer
                         </span>
+                        {!def.istStandard && !isStandardRolle(r) && (
+                          <span className="text-[10px] font-medium text-cyan-700">
+                            · Eigene Rolle
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs font-semibold text-slate-900 mt-1 truncate">
                         {def.bezeichnung}
@@ -552,7 +647,13 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           {/* Permission Toggles for Selected Role (8 cols) */}
           <div className="lg:col-span-8 bg-white border border-slate-200 rounded-lg overflow-hidden">
             {(() => {
-              const activeDef = rollenConfig[selectedEditRole];
+              const activeRoleKey = rollenConfig[selectedEditRole]
+                ? selectedEditRole
+                : roleKeys[0];
+              const activeDef = rollenConfig[activeRoleKey];
+              if (!activeDef) return null;
+              const isStdRole = Boolean(activeDef.istStandard || isStandardRolle(activeRoleKey));
+              const assignedCount = benutzer.filter((u) => u.rolle === activeRoleKey).length;
               const groups: Array<'Pflege & Klienten' | 'Organisation & Finanzen' | 'Administration & Technik'> = [
                 'Pflege & Klienten',
                 'Organisation & Finanzen',
@@ -560,7 +661,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               ];
 
               const togglePerm = (permId: Berechtigung) => {
-                if (selectedEditRole === 'Admin' && permId === 'users_verwalten') return;
+                if (activeRoleKey === 'Admin' && permId === 'users_verwalten') return;
                 const hasIt = activeDef.berechtigungen.includes(permId);
                 let next = hasIt
                   ? activeDef.berechtigungen.filter((p) => p !== permId)
@@ -601,7 +702,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                   }
                 }
 
-                onUpdateRolePermissions(selectedEditRole, next);
+                onUpdateRolePermissions(activeRoleKey, next);
               };
 
               return (
@@ -614,22 +715,65 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                         </h3>
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${getRoleBadge(
-                            selectedEditRole
+                            activeRoleKey
                           )}`}
                         >
-                          {selectedEditRole}
+                          {activeRoleKey}
                         </span>
                       </div>
                       <p className="text-xs text-slate-500 mt-0.5">{activeDef.beschreibung}</p>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => onResetRoleToDefault(selectedEditRole)}
-                      className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
-                    >
-                      Standardrechte laden
-                    </button>
+                    {isStdRole ? (
+                      <button
+                        type="button"
+                        onClick={() => onResetRoleToDefault(activeRoleKey)}
+                        className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                      >
+                        Standardrechte laden
+                      </button>
+                    ) : confirmDeleteRole === activeRoleKey ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteRole(null)}
+                          className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-md cursor-pointer"
+                        >
+                          Abbrechen
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onDeleteRole(activeRoleKey)) {
+                              setConfirmDeleteRole(null);
+                              setSelectedEditRole('Pflegefachkraft');
+                            }
+                          }}
+                          className="px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-md cursor-pointer"
+                        >
+                          Endgültig löschen
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={assignedCount > 0}
+                        title={
+                          assignedCount > 0
+                            ? `Noch ${assignedCount} Benutzer zugewiesen – bitte zuerst umstellen`
+                            : 'Benutzerdefinierte Rolle löschen'
+                        }
+                        onClick={() => setConfirmDeleteRole(activeRoleKey)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                          assignedCount > 0
+                            ? 'text-slate-400 bg-slate-100 border-slate-200 cursor-not-allowed'
+                            : 'text-rose-700 bg-white border-rose-200 hover:bg-rose-50 cursor-pointer'
+                        }`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Rolle löschen</span>
+                      </button>
+                    )}
                   </div>
 
                   <div className="p-5 space-y-5">
@@ -644,7 +788,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                             {items.map((perm) => {
                               const checked = activeDef.berechtigungen.includes(perm.id);
                               const locked =
-                                selectedEditRole === 'Admin' && perm.id === 'users_verwalten';
+                                activeRoleKey === 'Admin' && perm.id === 'users_verwalten';
                               return (
                                 <label
                                   key={perm.id}
@@ -830,6 +974,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                       <tr>
                         <th className="p-2.5">IdP Gruppe / Claim</th>
                         <th className="p-2.5">Zugeordnete PflegeRust Rolle</th>
+                        <th className="p-2.5 text-right">Aktion</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
@@ -837,14 +982,82 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                         <tr key={idx} className="hover:bg-slate-50">
                           <td className="p-2.5 text-slate-800 font-bold">{rm.ssoGruppe}</td>
                           <td className="p-2.5">
-                            <span className={`px-2 py-0.5 rounded ${getRoleBadge(rm.zielRolle)}`}>
-                              {rm.zielRolle}
-                            </span>
+                            <select
+                              value={rm.zielRolle}
+                              onChange={(e) => {
+                                const next = [...ssoForm.rollenMapping];
+                                next[idx] = { ...rm, zielRolle: e.target.value as BenutzerRolle };
+                                setSsoForm({ ...ssoForm, rollenMapping: next });
+                              }}
+                              className={`px-2 py-0.5 rounded border text-[11px] font-sans font-medium cursor-pointer ${getRoleBadge(
+                                rm.zielRolle
+                              )}`}
+                            >
+                              {roleKeys.map((r) => (
+                                <option key={r} value={r} className="bg-white text-slate-900">
+                                  {rollenConfig[r]?.bezeichnung || r}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="p-2.5 text-right">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSsoForm({
+                                  ...ssoForm,
+                                  rollenMapping: ssoForm.rollenMapping.filter((_, i) => i !== idx),
+                                })
+                              }
+                              title="Mapping entfernen"
+                              className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <input
+                    type="text"
+                    value={newSsoGroup}
+                    onChange={(e) => setNewSsoGroup(e.target.value)}
+                    placeholder="Neue IdP-Gruppe (z.B. pflege_azubi)"
+                    className="flex-1 min-w-[180px] p-1.5 border border-slate-300 rounded font-mono text-[11px]"
+                  />
+                  <select
+                    value={newSsoTargetRole}
+                    onChange={(e) => setNewSsoTargetRole(e.target.value as BenutzerRolle)}
+                    className="p-1.5 border border-slate-300 rounded text-xs bg-white text-slate-800"
+                  >
+                    {roleKeys.map((r) => (
+                      <option key={r} value={r}>
+                        {rollenConfig[r]?.bezeichnung || r}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const grp = newSsoGroup.trim();
+                      if (!grp) return;
+                      setSsoForm({
+                        ...ssoForm,
+                        rollenMapping: [
+                          ...ssoForm.rollenMapping,
+                          { ssoGruppe: grp, zielRolle: newSsoTargetRole },
+                        ],
+                      });
+                      setNewSsoGroup('');
+                    }}
+                    className="px-2.5 py-1.5 text-xs font-semibold text-teal-900 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded cursor-pointer"
+                  >
+                    + Zuordnung
+                  </button>
                 </div>
               </div>
 
@@ -986,7 +1199,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                           ? 'text-rose-700'
                           : log.aktion === 'SYSTEM_SETUP' ||
                             log.aktion === 'ROLE_CHANGE' ||
-                            log.aktion === 'ROLE_CONFIG_CHANGE'
+                            log.aktion === 'ROLE_CONFIG_CHANGE' ||
+                            log.aktion === 'ROLE_CREATE' ||
+                            log.aktion === 'ROLE_DELETE'
                           ? 'text-purple-800'
                           : log.aktion === 'PASSWORD_CHANGE'
                           ? 'text-amber-700'
@@ -1005,6 +1220,128 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Modal: Create Custom Role */}
+      {showAddRoleModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl border border-slate-200 max-w-md w-full p-5 space-y-4 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-teal-700" />
+                <h3 className="font-bold text-slate-900 text-sm">Neue Benutzerrolle anlegen</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddRoleModal(false)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateRoleSubmit} className="space-y-3">
+              {customRoleError && (
+                <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-rose-800 text-[11px]">
+                  {customRoleError}
+                </div>
+              )}
+
+              <div>
+                <label className="text-slate-700 font-medium block mb-1">
+                  Rollenbezeichnung *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={customRoleName}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCustomRoleName(val);
+                    setCustomRoleError(null);
+                    if (!customRoleKeyEdited) {
+                      setCustomRoleKey(generateRoleKey(val));
+                    }
+                  }}
+                  placeholder="z.B. Auszubildende, Wundmanager, Hauswirtschaft"
+                  className="w-full p-2 border border-slate-300 rounded font-medium text-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-medium block mb-1">
+                  Technischer Schlüssel (ID) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={customRoleKey}
+                  onChange={(e) => {
+                    setCustomRoleKey(e.target.value);
+                    setCustomRoleKeyEdited(true);
+                    setCustomRoleError(null);
+                  }}
+                  placeholder="z.B. Wundmanager"
+                  className="w-full p-2 border border-slate-300 rounded font-mono text-slate-800"
+                />
+                <span className="text-[10px] text-slate-400 mt-0.5 block">
+                  Wird in MariaDB und im SSO-Mapping verwendet (A–Z, 0–9, _ oder -).
+                </span>
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-medium block mb-1">
+                  Beschreibung
+                </label>
+                <textarea
+                  rows={2}
+                  value={customRoleDesc}
+                  onChange={(e) => setCustomRoleDesc(e.target.value)}
+                  placeholder="Aufgabenbereich und Zugriffsrahmen dieser Rolle..."
+                  className="w-full p-2 border border-slate-300 rounded text-slate-800"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-medium block mb-1">
+                  Berechtigungen als Vorlage übernehmen
+                </label>
+                <select
+                  value={customRoleTemplate}
+                  onChange={(e) => setCustomRoleTemplate(e.target.value)}
+                  className="w-full p-2 border border-slate-300 rounded font-medium bg-white text-slate-800"
+                >
+                  <option value="empty">Minimal (nur Übersicht / Dashboard)</option>
+                  {roleKeys.map((r) => (
+                    <option key={r} value={r}>
+                      Kopieren von: {rollenConfig[r]?.bezeichnung || r} (
+                      {rollenConfig[r]?.berechtigungen.length || 0} Rechte)
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-slate-400 mt-0.5 block">
+                  Nach dem Anlegen können Sie alle Einzelrechte direkt in der Rechte-Matrix anpassen.
+                </span>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setShowAddRoleModal(false)}
+                  className="px-3 py-1.5 text-xs text-slate-700 bg-slate-100 rounded hover:bg-slate-200 cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 text-xs font-semibold text-white bg-teal-700 rounded hover:bg-teal-800 cursor-pointer shadow-xs"
+                >
+                  Rolle anlegen
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -1080,13 +1417,11 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                     onChange={(e) => setNewRole(e.target.value as BenutzerRolle)}
                     className="w-full p-2 border border-slate-300 rounded font-medium"
                   >
-                    <option value="Pflegefachkraft">Pflegefachkraft</option>
-                    <option value="Pflegehelfer">Pflegehelfer</option>
-                    <option value="Wohnbereichsleitung">Wohnbereichsleitung</option>
-                    <option value="PDL">Pflegedienstleitung (PDL)</option>
-                    <option value="Verwaltung_Abrechnung">Verwaltung &amp; Abrechnung</option>
-                    <option value="Admin">Administrator</option>
-                    <option value="Datenschutz_QM">Datenschutz &amp; QM</option>
+                    {roleKeys.map((r) => (
+                      <option key={r} value={r}>
+                        {rollenConfig[r]?.bezeichnung || r}
+                      </option>
+                    ))}
                   </select>
                 </div>
 

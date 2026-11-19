@@ -158,7 +158,7 @@ export interface SnapImportData {
   }>;
 }
 
-export type BenutzerRolle =
+export type StandardBenutzerRolle =
   | 'Admin'
   | 'PDL'
   | 'Wohnbereichsleitung'
@@ -166,6 +166,8 @@ export type BenutzerRolle =
   | 'Pflegehelfer'
   | 'Verwaltung_Abrechnung'
   | 'Datenschutz_QM';
+
+export type BenutzerRolle = StandardBenutzerRolle | (string & {});
 
 export type Berechtigung =
   | 'dashboard'
@@ -190,6 +192,7 @@ export interface RollenDefinition {
   bezeichnung: string;
   beschreibung: string;
   berechtigungen: Berechtigung[];
+  istStandard?: boolean;
 }
 
 export interface AppBenutzer {
@@ -260,6 +263,8 @@ export interface AuditLogEintrag {
     | 'PASSWORD_CHANGE'
     | 'ROLE_CHANGE'
     | 'ROLE_CONFIG_CHANGE'
+    | 'ROLE_CREATE'
+    | 'ROLE_DELETE'
     | 'PATIENT_READ'
     | 'PATIENT_UPDATE'
     | 'MED_DISPENSE'

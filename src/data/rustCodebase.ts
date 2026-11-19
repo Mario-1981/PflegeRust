@@ -486,6 +486,17 @@ CREATE TABLE IF NOT EXISTS users (
     INDEX idx_users_sso (sso_subject_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 6b. Dynamische Benutzerrollen & Berechtigungsmatrix (RBAC)
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role_name VARCHAR(32) PRIMARY KEY,
+    display_name VARCHAR(128) NOT NULL,
+    description TEXT,
+    permissions_json TEXT NOT NULL,
+    is_standard BOOLEAN NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 7. SSO Konfiguration (OpenID Connect / Keycloak / SAML)
 CREATE TABLE IF NOT EXISTS sso_configurations (
     id VARCHAR(64) PRIMARY KEY,
@@ -852,6 +863,15 @@ pub struct UpdatePatientPayload {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateRolePayload {
+    pub role: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub permissions: Vec<String>,
+    pub actor_username: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateRolePermissionsPayload {
     pub permissions: Vec<String>,
     pub actor_username: String,
@@ -870,8 +890,8 @@ pub fn create_router(db_pool: DbPool) -> Router {
         .route("/api/setup/complete", post(complete_initial_setup))
         .route("/api/auth/login", post(login_local))
         .route("/api/auth/logout", post(logout_session))
-        .route("/api/roles", get(list_role_permissions))
-        .route("/api/roles/:role", put(update_role_permissions))
+        .route("/api/roles", get(list_role_permissions).post(create_role))
+        .route("/api/roles/:role", put(update_role_permissions).delete(delete_role))
         .route("/api/users/:id/role", put(update_user_role))
         .route("/api/patients", get(list_patients))
         .route("/api/patients/:id", put(update_patient).delete(delete_patient))
@@ -1039,7 +1059,9 @@ async fn logout_session(
 }
 
 async fn list_role_permissions(State(pool): State<DbPool>) -> Result<Json<Value>, StatusCode> {
-    let rows = sqlx::query("SELECT role_name, permissions_json FROM role_permissions ORDER BY role_name")
+    let rows = sqlx::query(
+        "SELECT role_name, display_name, description, permissions_json, is_standard FROM role_permissions ORDER BY is_standard DESC, role_name"
+    )
         .fetch_all(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1048,13 +1070,99 @@ async fn list_role_permissions(State(pool): State<DbPool>) -> Result<Json<Value>
         .into_iter()
         .map(|r| {
             let role_name: String = r.get("role_name");
+            let display_name: String = r.get("display_name");
+            let description: Option<String> = r.get("description");
+            let is_standard: bool = r.get("is_standard");
             let perms_raw: String = r.get("permissions_json");
             let perms: Value = serde_json::from_str(&perms_raw).unwrap_or_else(|_| json!([]));
-            json!({ "role": role_name, "permissions": perms })
+            json!({
+                "role": role_name,
+                "display_name": display_name,
+                "description": description,
+                "is_standard": is_standard,
+                "permissions": perms
+            })
         })
         .collect();
 
     Ok(Json(json!({ "roles": roles })))
+}
+
+async fn create_role(
+    State(pool): State<DbPool>,
+    Json(payload): Json<CreateRolePayload>,
+) -> Result<(StatusCode, Json<Value>), StatusCode> {
+    let key = payload.role.trim();
+    if key.len() < 2 || key.len() > 32 || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let perms_json = serde_json::to_string(&payload.permissions)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let result = sqlx::query(
+        "INSERT INTO role_permissions (role_name, display_name, description, permissions_json, is_standard)
+         VALUES (?, ?, ?, ?, FALSE)"
+    )
+    .bind(key)
+    .bind(payload.display_name.trim())
+    .bind(payload.description.as_deref().unwrap_or(""))
+    .bind(&perms_json)
+    .execute(&pool)
+    .await;
+
+    if result.is_err() {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let _ = sqlx::query(
+        "INSERT INTO audit_logs (username, role, action, resource, details)
+         VALUES (?, 'Admin', 'ROLE_CREATE', ?, ?)"
+    )
+    .bind(&payload.actor_username)
+    .bind(format!("RBAC Rolle: {}", key))
+    .bind(format!("Neue Rolle '{}' erstellt", payload.display_name.trim()))
+    .execute(&pool)
+    .await;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "status": "created", "role": key, "display_name": payload.display_name })),
+    ))
+}
+
+async fn delete_role(
+    State(pool): State<DbPool>,
+    Path(role): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let existing = sqlx::query("SELECT is_standard FROM role_permissions WHERE role_name = ?")
+        .bind(&role)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if existing.get::<bool, _>("is_standard") {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let assigned = sqlx::query("SELECT COUNT(*) AS cnt FROM users WHERE role = ?")
+        .bind(&role)
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if assigned.get::<i64, _>("cnt") > 0 {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    sqlx::query("DELETE FROM role_permissions WHERE role_name = ?")
+        .bind(&role)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn update_role_permissions(

@@ -30,6 +30,7 @@ import {
   hasPermission,
   canAccessTab,
   getFirstAllowedTab,
+  isStandardRolle,
 } from './data/rbacConfig';
 
 import {
@@ -439,7 +440,11 @@ export default function App() {
       `Benutzer: ${target.benutzername}`,
       `Rolle angepasst: ${prevRole} → ${newRole}`
     );
-    showToast(`Rolle von ${target.vorname} ${target.name} auf ${rollenConfig[newRole].bezeichnung} geändert.`);
+    showToast(
+      `Rolle von ${target.vorname} ${target.name} auf ${
+        rollenConfig[newRole]?.bezeichnung || newRole
+      } geändert.`
+    );
   };
 
   const handleUpdateRolePermissions = (
@@ -450,6 +455,9 @@ export default function App() {
       showToast('Keine Berechtigung zum Anpassen von Rollenberechtigungen.');
       return;
     }
+    const existing = rollenConfig[rolle];
+    if (!existing) return;
+
     const sanitized =
       rolle === 'Admin' && !berechtigungen.includes('users_verwalten')
         ? (['users_verwalten', ...berechtigungen] as Berechtigung[])
@@ -468,12 +476,16 @@ export default function App() {
       `RBAC Rolle: ${rolle}`,
       `Berechtigungen aktualisiert (${sanitized.length} Module/Aktionen erlaubt)`
     );
-    showToast(`Rollenrechte für ${rollenConfig[rolle].bezeichnung} sofort wirksam gespeichert.`);
+    showToast(`Rollenrechte für ${existing.bezeichnung} sofort wirksam gespeichert.`);
   };
 
   const handleResetRoleToDefault = (rolle: BenutzerRolle) => {
     if (!can('users_verwalten')) {
       showToast('Keine Berechtigung zum Zurücksetzen von Rollenberechtigungen.');
+      return;
+    }
+    if (!INITIAL_ROLLEN_CONFIG[rolle]) {
+      showToast('Für benutzerdefinierte Rollen gibt es keine Standardrechte.');
       return;
     }
     setRollenConfig((prev) => ({
@@ -486,6 +498,79 @@ export default function App() {
       'Standardberechtigungen wiederhergestellt'
     );
     showToast(`Standardrechte für ${INITIAL_ROLLEN_CONFIG[rolle].bezeichnung} wiederhergestellt.`);
+  };
+
+  const handleCreateRole = (newRole: RollenDefinition): boolean => {
+    if (!can('users_verwalten')) {
+      showToast('Keine Berechtigung zum Erstellen neuer Rollen.');
+      return false;
+    }
+    const key = newRole.rolle.trim();
+    if (!key || rollenConfig[key]) {
+      showToast(`Rollen-Schlüssel „${key}“ existiert bereits oder ist ungültig.`);
+      return false;
+    }
+    const created: RollenDefinition = {
+      ...newRole,
+      rolle: key,
+      bezeichnung: newRole.bezeichnung.trim(),
+      beschreibung:
+        newRole.beschreibung.trim() ||
+        'Benutzerdefinierte Fachrolle (individuell durch Administrator konfiguriert).',
+      istStandard: false,
+    };
+    setRollenConfig((prev) => ({
+      ...prev,
+      [key]: created,
+    }));
+    addAuditLog(
+      'ROLE_CREATE',
+      `RBAC Rolle: ${key}`,
+      `Neue Rolle „${created.bezeichnung}“ mit ${created.berechtigungen.length} Berechtigungen angelegt`
+    );
+    showToast(`Neue Rolle „${created.bezeichnung}“ erfolgreich erstellt.`);
+    return true;
+  };
+
+  const handleDeleteRole = (rolle: BenutzerRolle): boolean => {
+    if (!can('users_verwalten')) {
+      showToast('Keine Berechtigung zum Löschen von Rollen.');
+      return false;
+    }
+    const target = rollenConfig[rolle];
+    if (!target || target.istStandard || isStandardRolle(rolle)) {
+      showToast('Standardrollen können nicht gelöscht werden.');
+      return false;
+    }
+    const assignedUsers = benutzer.filter((u) => u.rolle === rolle);
+    if (assignedUsers.length > 0) {
+      showToast(
+        `Rolle „${target.bezeichnung}“ ist noch ${assignedUsers.length} Benutzer(n) zugewiesen. Bitte weisen Sie diesen zuerst eine andere Rolle zu.`
+      );
+      return false;
+    }
+    if (ssoConfig.defaultRolle === rolle) {
+      showToast(
+        `Rolle „${target.bezeichnung}“ ist aktuell als SSO-Standardrolle konfiguriert und kann nicht gelöscht werden.`
+      );
+      return false;
+    }
+    setRollenConfig((prev) => {
+      const next = { ...prev };
+      delete next[rolle];
+      return next;
+    });
+    setSsoConfig((prev) => ({
+      ...prev,
+      rollenMapping: prev.rollenMapping.filter((m) => m.zielRolle !== rolle),
+    }));
+    addAuditLog(
+      'ROLE_DELETE',
+      `RBAC Rolle: ${rolle}`,
+      `Benutzerdefinierte Rolle „${target.bezeichnung}“ entfernt`
+    );
+    showToast(`Rolle „${target.bezeichnung}“ wurde entfernt.`);
+    return true;
   };
 
   const handleResetUserPassword = (
@@ -865,7 +950,7 @@ export default function App() {
                   Keine Module für Ihre Rolle freigegeben
                 </h2>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Für Ihre aktuelle Rolle (<strong>{rollenConfig[activeUser.role].bezeichnung}</strong>) sind derzeit keine Anwendungsbereiche aktiviert. Bitte wenden Sie sich an einen Administrator.
+                  Für Ihre aktuelle Rolle (<strong>{rollenConfig[activeUser.role]?.bezeichnung || activeUser.role}</strong>) sind derzeit keine Anwendungsbereiche aktiviert. Bitte wenden Sie sich an einen Administrator.
                 </p>
               </div>
             )}
@@ -971,6 +1056,8 @@ export default function App() {
                 onUpdateUserRole={handleUpdateUserRole}
                 onUpdateRolePermissions={handleUpdateRolePermissions}
                 onResetRoleToDefault={handleResetRoleToDefault}
+                onCreateRole={handleCreateRole}
+                onDeleteRole={handleDeleteRole}
                 onResetUserPassword={handleResetUserPassword}
               />
             )}

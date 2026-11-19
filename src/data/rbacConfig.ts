@@ -1,4 +1,9 @@
-import { BenutzerRolle, Berechtigung, RollenDefinition } from '../types/pflege';
+import {
+  BenutzerRolle,
+  Berechtigung,
+  RollenDefinition,
+  StandardBenutzerRolle,
+} from '../types/pflege';
 
 export interface BerechtigungMeta {
   id: Berechtigung;
@@ -106,7 +111,7 @@ export const ALLE_BERECHTIGUNGEN: BerechtigungMeta[] = [
   },
 ];
 
-export const ALLE_ROLLEN: BenutzerRolle[] = [
+export const ALLE_ROLLEN: StandardBenutzerRolle[] = [
   'Admin',
   'PDL',
   'Wohnbereichsleitung',
@@ -116,12 +121,32 @@ export const ALLE_ROLLEN: BenutzerRolle[] = [
   'Datenschutz_QM',
 ];
 
-export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
+export function isStandardRolle(rolle: BenutzerRolle): boolean {
+  return (ALLE_ROLLEN as string[]).includes(rolle);
+}
+
+export function generateRoleKey(bezeichnung: string): string {
+  return bezeichnung
+    .trim()
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
+    .replace(/Ä/g, 'Ae')
+    .replace(/Ö/g, 'Oe')
+    .replace(/Ü/g, 'Ue')
+    .replace(/ß/g, 'ss')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 32);
+}
+
+export const INITIAL_ROLLEN_CONFIG: Record<string, RollenDefinition> = {
   Admin: {
     rolle: 'Admin',
     bezeichnung: 'Administrator',
     beschreibung: 'Vollzugriff auf System, MariaDB, Nutzerverwaltung, Rollenrechte und SSO.',
     berechtigungen: ALLE_BERECHTIGUNGEN.map((b) => b.id),
+    istStandard: true,
   },
   PDL: {
     rolle: 'PDL',
@@ -142,6 +167,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
       'abrechnung',
       'migration',
     ],
+    istStandard: true,
   },
   Wohnbereichsleitung: {
     rolle: 'Wohnbereichsleitung',
@@ -160,6 +186,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
       'pflege_dokumentieren',
       'dienstplan',
     ],
+    istStandard: true,
   },
   Pflegefachkraft: {
     rolle: 'Pflegefachkraft',
@@ -176,6 +203,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
       'medikation_bearbeiten',
       'pflege_dokumentieren',
     ],
+    istStandard: true,
   },
   Pflegehelfer: {
     rolle: 'Pflegehelfer',
@@ -188,6 +216,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
       'touren_quittieren',
       'pflege_dokumentieren',
     ],
+    istStandard: true,
   },
   Verwaltung_Abrechnung: {
     rolle: 'Verwaltung_Abrechnung',
@@ -200,6 +229,7 @@ export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
       'dienstplan',
       'abrechnung',
     ],
+    istStandard: true,
   },
   Datenschutz_QM: {
     rolle: 'Datenschutz_QM',
@@ -211,13 +241,14 @@ export const INITIAL_ROLLEN_CONFIG: Record<BenutzerRolle, RollenDefinition> = {
       'sis_lesen',
       'audit_lesen',
     ],
+    istStandard: true,
   },
 };
 
 export function hasPermission(
   rolle: BenutzerRolle,
   perm: Berechtigung,
-  rollenConfig: Record<BenutzerRolle, RollenDefinition>
+  rollenConfig: Record<string, RollenDefinition>
 ): boolean {
   const def = rollenConfig[rolle];
   if (!def) return false;
