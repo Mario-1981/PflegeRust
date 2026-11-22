@@ -1,18 +1,14 @@
 import React, { useState } from 'react';
 import {
   Code2,
-  Download,
   Copy,
   Check,
   FolderTree,
   Terminal,
   Cpu,
-  Layers,
-  FileText,
   Database,
 } from 'lucide-react';
-import { RUST_CODEBASE, RustFile } from '../data/rustCodebase';
-import { downloadRustDebianZip } from '../utils/zipExport';
+import { RUST_CODEBASE } from '../data/rustCodebase';
 
 export const RustCodeView: React.FC = () => {
   const [selectedPath, setSelectedPath] = useState<string>('src/db.rs');
@@ -41,17 +37,9 @@ export const RustCodeView: React.FC = () => {
             Quellcode-Repository: pfleged &amp; MariaDB Driver
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Asynchrones sqlx MariaDB Connection Pooling · InnoDB Foreign Keys · Debian .deb Paketierung
+            Asynchrones sqlx MariaDB Connection Pooling · InnoDB Foreign Keys · Debian &amp; Docker Deployment via GitHub
           </p>
         </div>
-
-        <button
-          onClick={() => downloadRustDebianZip()}
-          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-teal-800 hover:bg-teal-900 rounded-md transition-colors shadow-xs cursor-pointer whitespace-nowrap"
-        >
-          <Download className="w-4 h-4" />
-          <span>Vollständiges MariaDB Rust-Projekt (.deb) als ZIP laden</span>
-        </button>
       </div>
 
       {/* Main Split: File Tree (3 cols) & Code Viewer (9 cols) */}

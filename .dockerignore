@@ -1,0 +1,14 @@
+node_modules
+dist
+dev-dist
+build
+coverage
+.git
+.github
+.env*
+!.env.example
+*.deb
+*.log
+SHA256SUMS
+packaging/staging
+.DS_Store

@@ -1,0 +1,90 @@
+name: Build Debian (.deb) Package
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Paketversion (z. B. 1.5.0)'
+        required: false
+        default: '1.5.0'
+      create_release:
+        description: 'Als GitHub Release veröffentlichen'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Abhängigkeiten installieren
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Produktions-Build erstellen
+        run: npm run build
+
+      - name: Paketversion bestimmen
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            RAW="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RAW="${GITHUB_REF_NAME#v}"
+          else
+            RAW="1.5.0+git.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
+          fi
+          echo "pkg_version=${RAW#v}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=v${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Debian .deb Paket bauen
+        run: |
+          chmod +x packaging/build-deb.sh
+          ./packaging/build-deb.sh "${{ steps.version.outputs.pkg_version }}"
+
+      - name: Paketinhalt prüfen
+        run: |
+          ls -lh pflegerust_*.deb SHA256SUMS
+          dpkg-deb --contents pflegerust_*.deb | head -n 40
+
+      - name: Debian-Paket als Workflow-Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: pflegerust-deb-${{ steps.version.outputs.pkg_version }}
+          path: |
+            pflegerust_*.deb
+            SHA256SUMS
+          if-no-files-found: error
+
+      - name: GitHub Release mit .deb Paket erstellen
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag_name }}
+          name: PflegeRust ${{ steps.version.outputs.tag_name }}
+          generate_release_notes: true
+          files: |
+            pflegerust_*.deb
+            SHA256SUMS

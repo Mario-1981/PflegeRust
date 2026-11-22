@@ -125,7 +125,7 @@ export const ALLE_BERECHTIGUNGEN: BerechtigungMeta[] = [
     id: 'system_technik',
     label: 'MariaDB, Rust-Code & Debian CLI',
     gruppe: 'Administration & Technik',
-    beschreibung: 'Datenbank-Konfiguration, Rust-Quellcode, .deb-Export und Terminal nutzen',
+    beschreibung: 'Datenbank-Konfiguration, Rust-Quellcode und Terminal nutzen',
   },
 ];
 

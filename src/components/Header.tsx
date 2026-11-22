@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Download,
   Database,
   LogOut,
   ChevronDown,
@@ -11,7 +10,6 @@ import {
   Fingerprint,
   Menu,
 } from 'lucide-react';
-import { downloadRustDebianZip } from '../utils/zipExport';
 import { ActiveSessionUser, BenutzerRolle, RollenDefinition } from '../types/pflege';
 import { canAccessTab, hasPermission } from '../data/rbacConfig';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -335,25 +333,14 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {canSystem && (
-          <>
-            <button
-              onClick={onOpenMariaDbModal}
-              title="MariaDB Verbindungseinstellungen & Status prüfen"
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-md transition-colors cursor-pointer"
-            >
-              <Database className="w-3.5 h-3.5 text-teal-700" />
-              <span className="font-mono">MariaDB 10.11</span>
-            </button>
-
-            <button
-              onClick={() => downloadRustDebianZip()}
-              title="Vollständiges Rust-Projekt und Debian-Paketdateien mit MariaDB als ZIP herunterladen"
-              className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-teal-800 rounded-md hover:bg-teal-900 transition-colors whitespace-nowrap shrink-0 shadow-xs cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Rust .deb Paket</span>
-            </button>
-          </>
+          <button
+            onClick={onOpenMariaDbModal}
+            title="MariaDB Verbindungseinstellungen & Status prüfen"
+            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-md transition-colors cursor-pointer"
+          >
+            <Database className="w-3.5 h-3.5 text-teal-700" />
+            <span className="font-mono">MariaDB 10.11</span>
+          </button>
         )}
       </div>
       </div>
