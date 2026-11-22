@@ -1,35 +1,19 @@
 services:
   pflegerust:
-    # Ersetzen Sie <GITHUB_USER>/<REPO> nach dem Push durch Ihren GitHub-Pfad,
-    # oder bauen Sie lokal mit: docker compose up -d --build
+    # All-in-One Container: enthält PflegeRust Web-App, Backend-API UND MariaDB 10.11!
+    # Einfach starten mit: docker compose up -d
     image: ${PFLEGERUST_IMAGE:-pflegerust:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: pflegerust-web
+    container_name: pflegerust
     restart: unless-stopped
     ports:
-      - "${PFLEGERUST_PORT:-8080}:80"
-    depends_on:
-      mariadb:
-        condition: service_healthy
-
-  mariadb:
-    image: mariadb:10.11
-    container_name: pflegerust-mariadb
-    restart: unless-stopped
-    environment:
-      MARIADB_DATABASE: ${MARIADB_DATABASE:-pflege_db}
-      MARIADB_USER: ${MARIADB_USER:-pfleged}
-      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-bitte-aendern}
-      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-bitte-root-aendern}
+      - "${PFLEGERUST_PORT:-8080}:8080"
     volumes:
-      - pflegerust_mariadb_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+      - pflegerust_mysql:/var/lib/mysql
+      - pflegerust_config:/var/lib/pflegerust
 
 volumes:
-  pflegerust_mariadb_data:
+  pflegerust_mysql:
+  pflegerust_config:

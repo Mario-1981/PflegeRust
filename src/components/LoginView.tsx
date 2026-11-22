@@ -37,6 +37,14 @@ import {
 } from '../utils/mfaCrypto';
 import { PWAInstallButton } from './PWAInstallButton';
 import { OfflineIndicator } from './OfflineIndicator';
+import {
+  PublicAuthUserInfo,
+  completeForcedPasswordApi,
+  fetchPasskeyOptionsApi,
+  loginApi,
+  passkeyLoginApi,
+  verifyMfaApi,
+} from '../utils/apiClient';
 
 interface LoginViewProps {
   benutzer: AppBenutzer[];
@@ -46,6 +54,11 @@ interface LoginViewProps {
   ssoConfig: SsoKonfiguration;
   logoutNotice: string | null;
   credentialsReady: boolean;
+  onServerAuthenticated: (
+    token: string,
+    activeUser: ActiveSessionUser,
+    state: Record<string, unknown>
+  ) => void;
   onLogin: (user: AppBenutzer, authLabel: string) => void;
   onEndSession: (userId: string) => void;
   onFailedLogin: (identifier: string, matchedUser?: AppBenutzer, viaSso?: boolean) => void;
@@ -62,6 +75,38 @@ interface LoginViewProps {
     salt: string,
     hash: string
   ) => AppBenutzer | null;
+}
+
+function publicInfoToUserShell(info: PublicAuthUserInfo): AppBenutzer {
+  return {
+    id: info.id,
+    benutzername: info.benutzername,
+    email: info.email,
+    vorname: info.vorname,
+    name: info.name,
+    rolle: info.rolle,
+    authMethode: info.authMethode,
+    abteilung: info.abteilung,
+    aktiv: true,
+    letzterLogin: '',
+    erstelltAm: '',
+    zweiFaktor: {
+      aktiviert: info.hasTotp || info.securityKeys.length > 0,
+      totpAktiviert: info.hasTotp,
+      backupCodeHashes: info.hasBackupCodes ? ['present'] : [],
+      sicherheitsSchluessel: info.securityKeys.map((k) => ({
+        id: k.id,
+        credentialId: k.credentialId,
+        bezeichnung: k.bezeichnung,
+        transport: 'usb',
+        modus: k.modus,
+        publicKeyJwk: k.publicKeyJwk,
+        erstelltAm: '',
+        signCount: 0,
+      })),
+      passkeys: [],
+    },
+  };
 }
 
 const getAuthMethodLabel = (method: AppBenutzer['authMethode']): string => {
@@ -81,18 +126,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
   benutzer,
   activeSessions,
   initialTargetSessionId,
-  einrichtungName = 'Pflegedienst Berlin-Zentrum',
+  einrichtungName = 'PflegeRust',
   ssoConfig,
   logoutNotice,
   credentialsReady,
-  onLogin,
+  onServerAuthenticated,
   onEndSession,
-  onFailedLogin,
-  onMfaVerified,
-  onMfaFailed,
-  onConsumeBackupCode,
-  onRecordCredentialUsage,
-  onCompleteForcedPasswordChange,
 }) => {
   const [authTab, setAuthTab] = useState<'lokal' | 'sso'>('lokal');
   const [identifier, setIdentifier] = useState('');
@@ -106,6 +145,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [pendingPasswordChangeUser, setPendingPasswordChangeUser] = useState<{
     user: AppBenutzer;
     authLabel: string;
+    challengeToken: string;
   } | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -115,6 +155,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [pendingMfaUser, setPendingMfaUser] = useState<{
     user: AppBenutzer;
     authLabel: string;
+    challengeToken: string;
   } | null>(null);
   const [mfaMethodTab, setMfaMethodTab] = useState<'totp' | 'security_key' | 'backup'>('totp');
   const [totpCodeInput, setTotpCodeInput] = useState('');
@@ -152,19 +193,18 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setErrorMsg(null);
   };
 
-  const enterMfaStepOrLogin = (user: AppBenutzer, authLabel: string) => {
-    if (user.authMethode === 'lokal' && hasActiveSecondFactor(user)) {
-      const hasTotp = Boolean(user.zweiFaktor?.totpAktiviert);
-      const keys = user.zweiFaktor?.sicherheitsSchluessel || [];
-      setPendingMfaUser({ user, authLabel });
-      setMfaMethodTab(hasTotp ? 'totp' : 'security_key');
-      setSelectedSecurityKeyId(keys[0]?.credentialId || '');
-      setTotpCodeInput('');
-      setBackupCodeInput('');
-      setErrorMsg(null);
-      return;
-    }
-    onLogin(user, authLabel);
+  const enterServerMfaStep = (challengeToken: string, info: PublicAuthUserInfo) => {
+    const userShell = publicInfoToUserShell(info);
+    setPendingMfaUser({
+      user: userShell,
+      authLabel: getAuthMethodLabel(info.authMethode),
+      challengeToken,
+    });
+    setMfaMethodTab(info.hasTotp ? 'totp' : 'security_key');
+    setSelectedSecurityKeyId(info.securityKeys[0]?.credentialId || '');
+    setTotpCodeInput('');
+    setBackupCodeInput('');
+    setErrorMsg(null);
   };
 
   const handleAuthenticate = async (e: React.FormEvent, mode: 'lokal' | 'sso') => {
@@ -195,92 +235,37 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
     setIsVerifying(true);
     try {
-      const found = benutzer.find(
-        (u) => u.benutzername.toLowerCase() === trimmed || u.email.toLowerCase() === trimmed
-      );
-
-      if (!found) {
-        onFailedLogin(trimmed, undefined, mode === 'sso');
-        setErrorMsg('Ungültige Zugangsdaten. Benutzername/E-Mail oder Passwort ist fehlerhaft.');
-        setPassword('');
-        return;
-      }
-
-      if (!found.aktiv) {
-        onFailedLogin(trimmed, found, mode === 'sso');
-        const lockedByAttempts = (found.fehlversuche || 0) >= MAX_LOGIN_ATTEMPTS;
-        setErrorMsg(
-          lockedByAttempts
-            ? `Dieses Konto wurde nach ${MAX_LOGIN_ATTEMPTS} fehlgeschlagenen Anmeldeversuchen automatisch gesperrt. Bitte wenden Sie sich an die IT-Administration.`
-            : 'Dieses Benutzerkonto ist gesperrt. Bitte wenden Sie sich an die IT-Administration oder PDL.'
-        );
-        setPassword('');
-        return;
-      }
-
-      if (mode === 'lokal' && found.authMethode !== 'lokal') {
-        setErrorMsg(
-          `Dieses Konto ist ausschließlich für Single Sign-On (${getAuthMethodLabel(
-            found.authMethode
-          )}) freigegeben. Bitte wechseln Sie zum Tab „Single Sign-On“.`
-        );
-        setPassword('');
-        return;
-      }
-
-      if (mode === 'sso' && found.authMethode === 'lokal') {
-        setErrorMsg(
-          'Dieses Konto ist ein lokales MariaDB-Konto und nicht mit dem SSO Identity Provider verknüpft. Bitte nutzen Sie die lokale Anmeldung.'
-        );
-        setPassword('');
-        return;
-      }
-
-      const isValid = await verifyPassword(password, found.passwortSalt, found.passwortHash);
-      if (!isValid) {
-        const nextAttempts = (found.fehlversuche || 0) + 1;
-        const remaining = Math.max(0, MAX_LOGIN_ATTEMPTS - nextAttempts);
-        const isLastActiveAdmin =
-          found.aktiv &&
-          found.rolle === 'Admin' &&
-          benutzer.filter((u) => u.aktiv && u.rolle === 'Admin').length <= 1;
-        onFailedLogin(trimmed, found, mode === 'sso');
-        setPassword('');
-        if (remaining === 0) {
-          if (isLastActiveAdmin) {
-            setErrorMsg(
-              `Falsches Passwort (${nextAttempts} Fehlversuche). Der letzte aktive Administrator kann nicht gesperrt werden – der Vorfall wurde im DSGVO-Audit-Log protokolliert.`
-            );
-          } else {
-            setErrorMsg(
-              `Maximale Anzahl an Fehlversuchen (${MAX_LOGIN_ATTEMPTS}) erreicht. Das Konto wurde aus Sicherheitsgründen gesperrt und im DSGVO-Audit-Log vermerkt.`
-            );
-          }
-        } else {
-          setErrorMsg(
-            isLastActiveAdmin
-              ? `Falsches Passwort (Fehlversuch ${nextAttempts}). Der Vorfall wurde im DSGVO-Audit-Log protokolliert.`
-              : `Falsches Passwort. Verbleibende Versuche vor automatischer Kontosperrung: ${remaining}.`
-          );
-        }
-        return;
-      }
-
-      const authLabel = getAuthMethodLabel(found.authMethode);
+      const res = await loginApi(trimmed, password);
       setPassword('');
 
-      if (found.mussPasswortAendern && mode === 'lokal') {
-        setPendingPasswordChangeUser({ user: found, authLabel });
+      if (res.status === 'password_change_required') {
+        setPendingPasswordChangeUser({
+          user: publicInfoToUserShell(res.user),
+          authLabel: getAuthMethodLabel(res.user.authMethode),
+          challengeToken: res.challengeToken,
+        });
         return;
       }
 
-      enterMfaStepOrLogin(found, authLabel);
+      if (res.status === 'mfa_required') {
+        enterServerMfaStep(res.challengeToken, res.user);
+        return;
+      }
+
+      onServerAuthenticated(res.token, res.activeUser, res.state);
+    } catch (err) {
+      setPassword('');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Ungültige Zugangsdaten. Benutzername/E-Mail oder Passwort ist fehlerhaft.'
+      );
     } finally {
       setIsVerifying(false);
     }
   };
 
-  // ---------- 2FA Verification Handlers ----------
+  // ---------- 2FA Verification Handlers (Server-Verified against MariaDB) ----------
 
   const handleVerifyTotp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -288,22 +273,19 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setErrorMsg(null);
     setIsVerifying(true);
     try {
-      const ok = await verifyTotpCode(
-        pendingMfaUser.user.zweiFaktor?.totpSecret,
-        totpCodeInput,
-        1
-      );
-      if (!ok) {
-        onMfaFailed(pendingMfaUser.user, 'Ungültiger 6-stelliger Authenticator-App-Code (TOTP)');
-        setErrorMsg('Der eingegebene 6-stellige Authenticator-Code ist ungültig oder abgelaufen.');
-        setTotpCodeInput('');
-        return;
-      }
-      onMfaVerified(pendingMfaUser.user, '2. Faktor via Authenticator-App (TOTP) verifiziert');
-      const target = pendingMfaUser;
+      const res = await verifyMfaApi(pendingMfaUser.challengeToken, 'totp', {
+        code: totpCodeInput,
+      });
       setPendingMfaUser(null);
       setTotpCodeInput('');
-      onLogin(target.user, 'Lokal + 2FA (App)');
+      onServerAuthenticated(res.token, res.activeUser, res.state);
+    } catch (err) {
+      setTotpCodeInput('');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Der eingegebene 6-stellige Authenticator-Code ist ungültig oder abgelaufen.'
+      );
     } finally {
       setIsVerifying(false);
     }
@@ -312,8 +294,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const handleVerifySecurityKey = async () => {
     if (!pendingMfaUser) return;
     const keys = pendingMfaUser.user.zweiFaktor?.sicherheitsSchluessel || [];
-    const chosen =
-      keys.find((k) => k.credentialId === selectedSecurityKeyId) || keys[0];
+    const chosen = keys.find((k) => k.credentialId === selectedSecurityKeyId) || keys[0];
     if (!chosen) {
       setErrorMsg('Kein Sicherheitsstick für dieses Konto gefunden.');
       return;
@@ -322,29 +303,28 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setErrorMsg(null);
     setIsVerifying(true);
     try {
-      const res = await verifyWebAuthnAssertion({
+      const check = await verifyWebAuthnAssertion({
         credentialId: chosen.credentialId,
         modus: chosen.modus,
         publicKeyJwk: chosen.publicKeyJwk,
         userVerification: 'preferred',
       });
-      if (!res.ok) {
-        onMfaFailed(
-          pendingMfaUser.user,
-          `Sicherheitsstick „${chosen.bezeichnung}“ nicht bestätigt`
-        );
-        setErrorMsg(res.error || 'FIDO2-Sicherheitsstick konnte nicht verifiziert werden.');
+      if (!check.ok) {
+        setErrorMsg(check.error || 'FIDO2-Sicherheitsstick konnte nicht verifiziert werden.');
         return;
       }
 
-      onRecordCredentialUsage(pendingMfaUser.user.id, 'security_key', chosen.credentialId);
-      onMfaVerified(
-        pendingMfaUser.user,
-        `2. Faktor via FIDO2-Sicherheitsstick „${chosen.bezeichnung}“ verifiziert`
-      );
-      const target = pendingMfaUser;
+      const res = await verifyMfaApi(pendingMfaUser.challengeToken, 'security_key', {
+        credentialId: chosen.credentialId,
+      });
       setPendingMfaUser(null);
-      onLogin(target.user, 'Lokal + 2FA (Stick)');
+      onServerAuthenticated(res.token, res.activeUser, res.state);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'FIDO2-Sicherheitsstick konnte nicht verifiziert werden.'
+      );
     } finally {
       setIsVerifying(false);
     }
@@ -356,31 +336,25 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setErrorMsg(null);
     setIsVerifying(true);
     try {
-      const res = await verifyAndConsumeBackupCode(
-        backupCodeInput,
-        pendingMfaUser.user.zweiFaktor?.backupCodeHashes
-      );
-      if (!res.valid) {
-        onMfaFailed(pendingMfaUser.user, 'Ungültiger 2FA-Einmal-Backup-Code');
-        setErrorMsg('Der eingegebene Wiederherstellungscode ist ungültig oder wurde bereits verwendet.');
-        setBackupCodeInput('');
-        return;
-      }
-      onConsumeBackupCode(pendingMfaUser.user.id, res.remainingHashes);
-      onMfaVerified(
-        pendingMfaUser.user,
-        `2. Faktor via Einmal-Backup-Code verifiziert (${res.remainingHashes.length} verbleibend)`
-      );
-      const target = pendingMfaUser;
+      const res = await verifyMfaApi(pendingMfaUser.challengeToken, 'backup', {
+        code: backupCodeInput,
+      });
       setPendingMfaUser(null);
       setBackupCodeInput('');
-      onLogin(target.user, 'Lokal + 2FA (Backup)');
+      onServerAuthenticated(res.token, res.activeUser, res.state);
+    } catch (err) {
+      setBackupCodeInput('');
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Der eingegebene Wiederherstellungscode ist ungültig oder wurde bereits verwendet.'
+      );
     } finally {
       setIsVerifying(false);
     }
   };
 
-  // ---------- Passkey Passwordless Login Handler ----------
+  // ---------- Passkey Passwordless Login Handler (Server-Verified) ----------
 
   const handlePasskeyLogin = async () => {
     setErrorMsg(null);
@@ -389,18 +363,15 @@ export const LoginView: React.FC<LoginViewProps> = ({
       const trimmed = identifier.trim().toLowerCase();
 
       if (trimmed) {
-        const found = benutzer.find(
-          (u) => u.benutzername.toLowerCase() === trimmed || u.email.toLowerCase() === trimmed
-        );
-        if (!found || !found.aktiv || found.authMethode !== 'lokal' || !hasRegisteredPasskey(found)) {
+        const { passkeys } = await fetchPasskeyOptionsApi(trimmed);
+        if (!passkeys.length) {
           setErrorMsg(
             'Für diesen Benutzer ist kein aktiver Passkey registriert oder das Konto ist gesperrt.'
           );
           return;
         }
 
-        const passkeys = found.zweiFaktor?.passkeys || [];
-        let matchedPasskey = null;
+        let matchedCredentialId: string | null = null;
         let lastErr = '';
 
         for (const pk of passkeys) {
@@ -411,55 +382,35 @@ export const LoginView: React.FC<LoginViewProps> = ({
             userVerification: 'required',
           });
           if (check.ok) {
-            matchedPasskey = pk;
+            matchedCredentialId = pk.credentialId;
             break;
           }
           lastErr = check.error || '';
         }
 
-        if (!matchedPasskey) {
-          onMfaFailed(found, 'Passkey-Verifizierung fehlgeschlagen oder abgebrochen');
+        if (!matchedCredentialId) {
           setErrorMsg(lastErr || 'Passkey konnte nicht verifiziert werden.');
           return;
         }
 
-        onRecordCredentialUsage(found.id, 'passkey', matchedPasskey.credentialId);
-        onMfaVerified(
-          found,
-          `Passwortlose Anmeldung via Passkey „${matchedPasskey.bezeichnung}“ (${
-            matchedPasskey.modus === 'webauthn' ? 'WebAuthn' : 'ECDSA-P256'
-          })`,
-          true
-        );
-        onLogin(found, 'Passkey (FIDO2)');
+        const res = await passkeyLoginApi(matchedCredentialId);
+        onServerAuthenticated(res.token, res.activeUser, res.state);
         return;
       }
 
-      // No username typed: attempt native browser discoverable Passkey first (OS/browser picks credential)
+      // No username typed: attempt native browser discoverable Passkey first
       const nativeRes = await verifyDiscoverablePasskeyNative();
       if (nativeRes.ok && nativeRes.credentialId) {
-        const owner = benutzer.find(
-          (u) =>
-            u.aktiv &&
-            u.authMethode === 'lokal' &&
-            u.zweiFaktor?.passkeys.some((p) => p.credentialId === nativeRes.credentialId)
-        );
-        if (!owner) {
-          setErrorMsg('Der gewählte Passkey ist keinem aktiven Benutzerkonto zugeordnet.');
-          return;
-        }
-        const pk = owner.zweiFaktor!.passkeys.find(
-          (p) => p.credentialId === nativeRes.credentialId
-        )!;
-        onRecordCredentialUsage(owner.id, 'passkey', pk.credentialId);
-        onMfaVerified(owner, `Discoverable Passkey-Login „${pk.bezeichnung}“`, true);
-        onLogin(owner, 'Passkey (FIDO2)');
+        const res = await passkeyLoginApi(nativeRes.credentialId);
+        onServerAuthenticated(res.token, res.activeUser, res.state);
         return;
       }
 
       setErrorMsg(
         'Bitte geben Sie Ihren Benutzernamen oder Ihre E-Mail-Adresse ein und klicken Sie auf „Mit Passkey anmelden“, um Ihren registrierten Passkey zu verifizieren.'
       );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Passkey-Anmeldung fehlgeschlagen.');
     } finally {
       setIsVerifying(false);
     }
@@ -482,18 +433,24 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setIsVerifying(true);
     try {
       const { salt, hash } = await createPasswordRecord(newPassword);
-      const updatedUser = onCompleteForcedPasswordChange(
-        pendingPasswordChangeUser.user.id,
+      const res = await completeForcedPasswordApi(
+        pendingPasswordChangeUser.challengeToken,
         salt,
         hash
       );
-      const label = pendingPasswordChangeUser.authLabel;
       setPendingPasswordChangeUser(null);
       setNewPassword('');
       setConfirmPassword('');
-      if (updatedUser) {
-        enterMfaStepOrLogin(updatedUser, label);
+
+      if (res.status === 'mfa_required') {
+        enterServerMfaStep(res.challengeToken, res.user);
+        return;
       }
+      if (res.status === 'authenticated') {
+        onServerAuthenticated(res.token, res.activeUser, res.state);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Passwortänderung fehlgeschlagen.');
     } finally {
       setIsVerifying(false);
     }

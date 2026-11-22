@@ -3,8 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ShieldAlert, Database } from 'lucide-react';
+import {
+  ServerDbInfo,
+  completeSetupApi,
+  fetchBootstrap,
+  hasActiveToken,
+  logoutApi,
+  saveStateSectionApi,
+  setActiveSessionToken,
+} from './utils/apiClient';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { MobileBottomNav } from './components/MobileBottomNav';
@@ -66,17 +75,20 @@ import {
 } from './types/pflege';
 
 export default function App() {
+  const [isBootstrapping, setIsBootstrapping] = useState<boolean>(true);
+  const [serverDbInfo, setServerDbInfo] = useState<ServerDbInfo | null>(null);
   const [isSetupCompleted, setIsSetupCompleted] = useState<boolean>(false);
+  const hydratedRef = useRef<boolean>(false);
   const [einrichtung, setEinrichtung] = useState<EinrichtungsProfil>({
-    name: 'Pflegedienst Berlin-Zentrum',
-    ikNummer: '461102934',
-    ort: 'Berlin',
+    name: '',
+    ikNummer: '',
+    ort: '',
     versorgungsform: 'Ambulanter Pflegedienst',
     bundesland: 'Berlin',
   });
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
-  const [klienten, setKlienten] = useState<Klient[]>(INITIAL_KLIENTEN);
-  const [touren, setTouren] = useState<Tour[]>(INITIAL_TOUREN);
+  const [klienten, setKlienten] = useState<Klient[]>([]);
+  const [touren, setTouren] = useState<Tour[]>([]);
   const [mitarbeiter] = useState<Mitarbeiter[]>(INITIAL_MITARBEITER);
   const [benutzer, setBenutzer] = useState<AppBenutzer[]>([]);
   const [rollenConfig, setRollenConfig] = useState<Record<BenutzerRolle, RollenDefinition>>(
@@ -94,6 +106,48 @@ export default function App() {
   const [isMfaModalOpen, setIsMfaModalOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  // Bootstrap setup & MariaDB status from backend on app load
+  useEffect(() => {
+    let active = true;
+    fetchBootstrap()
+      .then((boot) => {
+        if (!active) return;
+        setServerDbInfo(boot.dbInfo);
+        setMariaDbConfig((prev) => ({
+          ...prev,
+          host: boot.dbInfo.host,
+          port: boot.dbInfo.port,
+          database: boot.dbInfo.database,
+          user: boot.dbInfo.user,
+          ssl: boot.dbInfo.ssl,
+        }));
+        if (boot.einrichtung) {
+          setEinrichtung(boot.einrichtung);
+        }
+        if (boot.ssoPublic) {
+          setSsoConfig((prev) => ({
+            ...prev,
+            aktiviert: boot.ssoPublic!.aktiviert,
+            providerTyp:
+              (boot.ssoPublic!.providerTyp as SsoKonfiguration['providerTyp']) || prev.providerTyp,
+            issuerUrl: boot.ssoPublic!.issuerUrl || prev.issuerUrl,
+            clientId: boot.ssoPublic!.clientId || prev.clientId,
+            erlaubeLokalenLogin: boot.ssoPublic!.erlaubeLokalenLogin,
+          }));
+        }
+        setIsSetupCompleted(boot.setupCompleted);
+      })
+      .catch(() => {
+        // Keep clean setup state if backend is restarting
+      })
+      .finally(() => {
+        if (active) setIsBootstrapping(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setIsMobileMenuOpen(false);
@@ -102,9 +156,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const [selectedKlientId, setSelectedKlientId] = useState<string | null>(
-    INITIAL_KLIENTEN[0]?.id || null
-  );
+  const [selectedKlientId, setSelectedKlientId] = useState<string | null>(null);
   const [isNewKlientModalOpen, setIsNewKlientModalOpen] = useState(false);
   const [isMariaDbModalOpen, setIsMariaDbModalOpen] = useState(false);
   const [mariaDbConfig, setMariaDbConfig] = useState<MariaDbConfig>({
@@ -1122,17 +1174,12 @@ export default function App() {
 
   const handleEndSession = (userId: string) => {
     const target = activeSessions.find((s) => s.id === userId);
+    void logoutApi(userId);
     setActiveSessions((prev) => prev.filter((s) => s.id !== userId));
     if (switchTargetSessionId === userId) {
       setSwitchTargetSessionId(null);
     }
     if (target) {
-      addAuditLog(
-        'LOGOUT',
-        'PflegeRust Session',
-        `Sitzung von ${target.name} (${target.auth}) vollständig beendet`,
-        { benutzer: target.benutzername, rolle: target.role }
-      );
       setLogoutNotice(`Sitzung von ${target.name} wurde vollständig abgemeldet.`);
     }
   };
@@ -1141,12 +1188,8 @@ export default function App() {
     if (!activeUser) return;
     const prevName = activeUser.name;
     const prevId = activeUser.id;
-    addAuditLog(
-      'LOGOUT',
-      'PflegeRust Session',
-      `Benutzer ${activeUser.name} (${activeUser.auth}) hat sich regulär abgemeldet`,
-      { benutzer: activeUser.benutzername, rolle: activeUser.role }
-    );
+    hydratedRef.current = false;
+    void logoutApi(prevId);
     setActiveSessions((prev) => prev.filter((s) => s.id !== prevId));
     setSwitchTargetSessionId(null);
     setActiveUser(null);
@@ -1192,7 +1235,99 @@ export default function App() {
     showToast(`Willkommen, ${fullName} (${user.rolle}).`);
   };
 
-  const handleCompleteSetup = (payload: SetupCompletionPayload) => {
+  const hydrateFromServerState = (state: Record<string, unknown>) => {
+    hydratedRef.current = false;
+    if (state.einrichtung) setEinrichtung(state.einrichtung as EinrichtungsProfil);
+    if (state.mariaDbConfig) setMariaDbConfig(state.mariaDbConfig as MariaDbConfig);
+    if (Array.isArray(state.benutzer)) setBenutzer(state.benutzer as AppBenutzer[]);
+    if (state.rollenConfig && Object.keys(state.rollenConfig as object).length > 0) {
+      setRollenConfig(state.rollenConfig as Record<BenutzerRolle, RollenDefinition>);
+    }
+    if (Array.isArray(state.klienten)) {
+      const nextKlienten = state.klienten as Klient[];
+      setKlienten(nextKlienten);
+      setSelectedKlientId(nextKlienten[0]?.id || null);
+    }
+    if (Array.isArray(state.touren)) setTouren(state.touren as Tour[]);
+    if (state.ssoConfig && Object.keys(state.ssoConfig as object).length > 0) {
+      setSsoConfig((prev) => ({ ...prev, ...(state.ssoConfig as Partial<SsoKonfiguration>) }));
+    }
+    if (Array.isArray(state.addons)) setAddons(state.addons as PflegeAddon[]);
+    if (Array.isArray(state.tiTransaktionen)) {
+      setTiTransaktionen(state.tiTransaktionen as TiTransaktion[]);
+    }
+    if (Array.isArray(state.auditLogs)) setAuditLogs(state.auditLogs as AuditLogEintrag[]);
+    // Re-enable MariaDB write sync on the next tick after React commits hydrated state
+    setTimeout(() => {
+      hydratedRef.current = true;
+    }, 0);
+  };
+
+  // Automatic persistent synchronization to MariaDB for every domain section
+  const syncSectionToServer = (section: string, data: unknown) => {
+    if (!hydratedRef.current || !isSetupCompleted || !activeUser || !hasActiveToken()) return;
+    saveStateSectionApi(section, data).catch(() => {
+      // Errors (e.g. RBAC rejection) are handled cleanly by UI permissions
+    });
+  };
+
+  useEffect(() => {
+    syncSectionToServer('einrichtung', einrichtung);
+  }, [einrichtung]);
+
+  useEffect(() => {
+    syncSectionToServer('benutzer', benutzer);
+  }, [benutzer]);
+
+  useEffect(() => {
+    syncSectionToServer('rollenConfig', rollenConfig);
+  }, [rollenConfig]);
+
+  useEffect(() => {
+    syncSectionToServer('klienten', klienten);
+  }, [klienten]);
+
+  useEffect(() => {
+    syncSectionToServer('touren', touren);
+  }, [touren]);
+
+  useEffect(() => {
+    syncSectionToServer('ssoConfig', ssoConfig);
+  }, [ssoConfig]);
+
+  useEffect(() => {
+    syncSectionToServer('addons', addons);
+  }, [addons]);
+
+  useEffect(() => {
+    syncSectionToServer('tiTransaktionen', tiTransaktionen);
+  }, [tiTransaktionen]);
+
+  useEffect(() => {
+    syncSectionToServer('auditLogs', auditLogs);
+  }, [auditLogs]);
+
+  const handleServerAuthenticated = (
+    token: string,
+    sessionUser: ActiveSessionUser,
+    state: Record<string, unknown>
+  ) => {
+    setActiveSessionToken(sessionUser.id, token);
+    hydrateFromServerState(state);
+    setActiveUser(sessionUser);
+    setActiveSessions((prev) => {
+      const filtered = prev.filter((s) => s.id !== sessionUser.id);
+      return [sessionUser, ...filtered];
+    });
+    setSwitchTargetSessionId(null);
+    setLogoutNotice(null);
+    const nextRollen =
+      (state.rollenConfig as Record<BenutzerRolle, RollenDefinition> | undefined) || rollenConfig;
+    setCurrentTab(getFirstAllowedTab(sessionUser.role, nextRollen));
+    showToast(`Willkommen, ${sessionUser.name} (${sessionUser.role}).`);
+  };
+
+  const handleCompleteSetup = async (payload: SetupCompletionPayload) => {
     // Defense-in-depth: strictly enforce role 'Admin' for the very first user
     const firstAdmin: AppBenutzer = {
       ...payload.adminUser,
@@ -1208,76 +1343,58 @@ export default function App() {
       },
     };
 
-    const fullName = `${firstAdmin.vorname} ${firstAdmin.name}`;
-    const adminSession: ActiveSessionUser = {
-      id: firstAdmin.id,
-      benutzername: firstAdmin.benutzername,
-      email: firstAdmin.email,
-      name: fullName,
-      role: 'Admin',
-      auth: 'Lokal (MariaDB)',
-      abteilung: firstAdmin.abteilung,
+    const nextSsoConfig: SsoKonfiguration = {
+      ...ssoConfig,
+      ...(payload.ssoPatch || {}),
     };
 
-    const nowTs = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const initialKlienten = payload.loadDemoCareData ? INITIAL_KLIENTEN : [];
+    const initialTouren = payload.loadDemoCareData ? INITIAL_TOUREN : [];
 
-    setEinrichtung(payload.einrichtung);
-    setMariaDbConfig(payload.mariaDb);
-    if (payload.ssoPatch) {
-      setSsoConfig((prev) => ({
-        ...prev,
-        ...payload.ssoPatch,
-      }));
-    }
+    const res = await completeSetupApi({
+      einrichtung: payload.einrichtung,
+      mariaDbConfig: payload.mariaDb,
+      adminUser: firstAdmin,
+      ssoConfig: nextSsoConfig,
+      rollenConfig: INITIAL_ROLLEN_CONFIG,
+      klienten: initialKlienten,
+      touren: initialTouren,
+      addons: INITIAL_ADDONS,
+      tiTransaktionen: payload.loadDemoCareData ? INITIAL_TI_TRANSAKTIONEN : [],
+    });
 
-    if (payload.loadDemoCareData) {
-      setKlienten(INITIAL_KLIENTEN);
-      setTouren(INITIAL_TOUREN);
-      setSelectedKlientId(INITIAL_KLIENTEN[0]?.id || null);
-    } else {
-      setKlienten([]);
-      setTouren([]);
-      setSelectedKlientId(null);
-    }
-
-    setBenutzer([firstAdmin]);
-    setActiveUser(adminSession);
-    setActiveSessions([adminSession]);
+    setServerDbInfo(res.dbInfo);
+    setActiveSessionToken(res.activeUser.id, res.token);
+    hydrateFromServerState(res.state);
+    setActiveUser(res.activeUser);
+    setActiveSessions([res.activeUser]);
     setSwitchTargetSessionId(null);
     setLogoutNotice(null);
     setCurrentTab('dashboard');
-    setAuditLogs([
-      {
-        id: `aud-setup-login-${Date.now()}`,
-        zeitstempel: nowTs,
-        benutzer: firstAdmin.benutzername,
-        rolle: 'Admin',
-        aktion: 'LOGIN_SUCCESS',
-        ressource: 'MariaDB Auth (PBKDF2/Argon2)',
-        details: `Erstanmeldung als Systemadministrator ${fullName} (Admin)`,
-        ipAdresse: '127.0.0.1',
-      },
-      {
-        id: `aud-setup-${Date.now() - 1}`,
-        zeitstempel: nowTs,
-        benutzer: firstAdmin.benutzername,
-        rolle: 'Admin',
-        aktion: 'SYSTEM_SETUP',
-        ressource: `Einrichtung: ${payload.einrichtung.name} (IK ${payload.einrichtung.ikNummer})`,
-        details: `Ersteinrichtung abgeschlossen; MariaDB ${payload.mariaDb.host}:${payload.mariaDb.port}/${payload.mariaDb.database} initialisiert; Erstbenutzer mit Rolle Admin erstellt`,
-        ipAdresse: '127.0.0.1',
-      },
-    ]);
     setIsSetupCompleted(true);
-    showToast(`Ersteinrichtung abgeschlossen. Angemeldet als ${fullName} (Admin).`);
+    showToast(
+      `Ersteinrichtung dauerhaft gespeichert. Angemeldet als ${res.activeUser.name} (Admin).`
+    );
   };
 
+  if (isBootstrapping) {
+    return (
+      <div className="min-h-[100dvh] bg-slate-100 flex items-center justify-center p-6">
+        <div className="bg-white border border-slate-200 rounded-lg px-6 py-5 shadow-xs flex items-center gap-3 text-sm text-slate-700">
+          <Database className="w-5 h-5 text-teal-700 animate-pulse" />
+          <span>Verbinde mit PflegeRust MariaDB-Server...</span>
+        </div>
+      </div>
+    );
+  }
+
   // Fresh installation: run Initial Setup Wizard until first Admin user is created
-  if (!isSetupCompleted || benutzer.length === 0) {
+  if (!isSetupCompleted) {
     return (
       <SetupWizardView
         initialMariaDb={mariaDbConfig}
         initialSsoConfig={ssoConfig}
+        serverDbInfo={serverDbInfo}
         onCompleteSetup={handleCompleteSetup}
       />
     );
@@ -1293,6 +1410,7 @@ export default function App() {
         ssoConfig={ssoConfig}
         logoutNotice={logoutNotice}
         credentialsReady={true}
+        onServerAuthenticated={handleServerAuthenticated}
         onLogin={handleLogin}
         onEndSession={handleEndSession}
         onFailedLogin={handleFailedLogin}

@@ -67,7 +67,8 @@ jobs:
       - name: Paketinhalt prüfen
         run: |
           ls -lh pflegerust_*.deb SHA256SUMS
-          dpkg-deb --contents pflegerust_*.deb | head -n 40
+          dpkg-deb --info pflegerust_*.deb
+          dpkg-deb --contents pflegerust_*.deb | awk 'NR<=40'
 
       - name: Debian-Paket als Workflow-Artefakt hochladen
         uses: actions/upload-artifact@v6

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Building2,
   Database,
@@ -24,6 +24,7 @@ import {
 import { MariaDbConfig } from './MariaDbConfigModal';
 import { createPasswordRecord, validatePasswordPolicy } from '../utils/authCrypto';
 import { PWAInstallButton } from './PWAInstallButton';
+import { ServerDbInfo, testDatabaseConnection } from '../utils/apiClient';
 
 export interface SetupCompletionPayload {
   einrichtung: EinrichtungsProfil;
@@ -36,7 +37,8 @@ export interface SetupCompletionPayload {
 interface SetupWizardViewProps {
   initialMariaDb: MariaDbConfig;
   initialSsoConfig: SsoKonfiguration;
-  onCompleteSetup: (payload: SetupCompletionPayload) => void;
+  serverDbInfo?: ServerDbInfo | null;
+  onCompleteSetup: (payload: SetupCompletionPayload) => Promise<void> | void;
 }
 
 const BUNDESLAENDER = [
@@ -61,44 +63,90 @@ const BUNDESLAENDER = [
 export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
   initialMariaDb,
   initialSsoConfig,
+  serverDbInfo,
   onCompleteSetup,
 }) => {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Step 1: Einrichtung
-  const [einrichtungName, setEinrichtungName] = useState('Pflegedienst Berlin-Zentrum');
-  const [ikNummer, setIkNummer] = useState('461102934');
-  const [ort, setOrt] = useState('Berlin');
+  // Step 1: Einrichtung (leer, damit der Nutzer direkt seine eigene Pflegeeinrichtung einträgt)
+  const [einrichtungName, setEinrichtungName] = useState('');
+  const [ikNummer, setIkNummer] = useState('');
+  const [ort, setOrt] = useState('');
   const [versorgungsform, setVersorgungsform] =
     useState<EinrichtungsProfil['versorgungsform']>('Ambulanter Pflegedienst');
   const [bundesland, setBundesland] = useState('Berlin');
 
-  // Step 2: MariaDB
-  const [dbConfig, setDbConfig] = useState<MariaDbConfig>(initialMariaDb);
-  const [dbPassword, setDbPassword] = useState('••••••••••••');
+  // Step 2: MariaDB (im Debian-Paket und Docker-Container automatisch vorkonfiguriert!)
+  const [dbConfig, setDbConfig] = useState<MariaDbConfig>({
+    ...initialMariaDb,
+    host: serverDbInfo?.host || initialMariaDb.host,
+    port: serverDbInfo?.port || initialMariaDb.port,
+    database: serverDbInfo?.database || initialMariaDb.database,
+    user: serverDbInfo?.user || initialMariaDb.user,
+    ssl: serverDbInfo?.ssl ?? initialMariaDb.ssl,
+  });
+  const [showAdvancedDb, setShowAdvancedDb] = useState(false);
   const [isTestingDb, setIsTestingDb] = useState(false);
-  const [dbCheckSuccess, setDbCheckSuccess] = useState(false);
+  const [dbStatus, setDbStatus] = useState<{
+    checked: boolean;
+    connected: boolean;
+    storageMode: 'mariadb' | 'preview-memory';
+    version: string;
+  }>({
+    checked: Boolean(serverDbInfo),
+    connected: Boolean(serverDbInfo?.connected),
+    storageMode: serverDbInfo?.storageMode || 'mariadb',
+    version: serverDbInfo?.version || 'MariaDB 10.11',
+  });
 
   // Step 3: Erster Benutzer (Rolle immer fest auf Admin!)
   const [adminVorname, setAdminVorname] = useState('');
   const [adminNachname, setAdminNachname] = useState('');
   const [adminUsername, setAdminUsername] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
-  const [adminAbteilung, setAdminAbteilung] = useState('IT & Pflegedienstleitung');
+  const [adminAbteilung, setAdminAbteilung] = useState('Pflegedienstleitung & IT');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [usernameTouched, setUsernameTouched] = useState(false);
 
-  // Step 4: SSO & Initialdaten
+  // Step 4: SSO & Start (standardmäßig leere Produktiv-Datenbank ohne Demo-Daten!)
   const [enableSsoNow, setEnableSsoNow] = useState(false);
   const [ssoProviderTyp, setSsoProviderTyp] =
     useState<SsoKonfiguration['providerTyp']>(initialSsoConfig.providerTyp);
   const [ssoIssuerUrl, setSsoIssuerUrl] = useState(initialSsoConfig.issuerUrl);
   const [ssoClientId, setSsoClientId] = useState(initialSsoConfig.clientId);
-  const [loadDemoCareData, setLoadDemoCareData] = useState(true);
+  const [loadDemoCareData, setLoadDemoCareData] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    testDatabaseConnection()
+      .then((res) => {
+        if (!active) return;
+        setDbConfig((prev) => ({
+          ...prev,
+          host: res.host || prev.host,
+          port: res.port || prev.port,
+          database: res.database || prev.database,
+          user: res.user || prev.user,
+        }));
+        setDbStatus({
+          checked: true,
+          connected: res.connected,
+          storageMode: res.storageMode,
+          version: res.version,
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setDbStatus((prev) => ({ ...prev, checked: true }));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const pwPolicy = validatePasswordPolicy(adminPassword);
 
@@ -131,17 +179,31 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
     }
   };
 
-  const handleTestDbConnection = () => {
+  const handleTestDbConnection = async () => {
     setErrorMsg(null);
-    if (!dbConfig.host.trim() || !dbConfig.database.trim() || !dbConfig.user.trim()) {
-      setErrorMsg('Bitte Host, Datenbankname und Benutzer für MariaDB angeben.');
-      return;
-    }
     setIsTestingDb(true);
-    setTimeout(() => {
+    try {
+      const res = await testDatabaseConnection();
+      setDbConfig((prev) => ({
+        ...prev,
+        host: res.host || prev.host,
+        port: res.port || prev.port,
+        database: res.database || prev.database,
+        user: res.user || prev.user,
+      }));
+      setDbStatus({
+        checked: true,
+        connected: res.connected,
+        storageMode: res.storageMode,
+        version: res.version,
+      });
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'MariaDB-Verbindung konnte nicht geprüft werden.'
+      );
+    } finally {
       setIsTestingDb(false);
-      setDbCheckSuccess(true);
-    }, 450);
+    }
   };
 
   const validateAndNext = () => {
@@ -230,11 +292,11 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
         mussPasswortAendern: false,
       };
 
-      onCompleteSetup({
+      await onCompleteSetup({
         einrichtung: {
           name: einrichtungName.trim(),
           ikNummer: ikNummer.trim(),
-          ort: ort.trim() || 'Berlin',
+          ort: ort.trim() || 'Deutschland',
           versorgungsform,
           bundesland,
         },
@@ -248,6 +310,12 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
         },
         loadDemoCareData,
       });
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Ersteinrichtung konnte nicht gespeichert werden.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -436,7 +504,7 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
               </div>
             )}
 
-            {/* Step 2: MariaDB */}
+            {/* Step 2: MariaDB (automatisch vorkonfiguriert – einfach auf Weiter klicken) */}
             {step === 2 && (
               <div className="p-6 space-y-5">
                 <div className="border-b border-slate-100 pb-4">
@@ -444,126 +512,127 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
                     Schritt 2 von 4 · Datenbankanbindung
                   </div>
                   <h2 className="text-xl font-bold text-slate-900 mt-1">
-                    MariaDB Server konfigurieren
+                    MariaDB ist vorkonfiguriert &amp; bereit
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Verbindungsdaten für den Debian MariaDB 10.11 InnoDB-Dienst (sqlx Connection Pool).
+                    Die Datenbank, Zugangsdaten und InnoDB-Tabellen werden im Debian-Paket und Docker-Container automatisch eingerichtet. Sie können direkt auf <strong>Weiter</strong> klicken.
                   </p>
                 </div>
 
                 <div className="space-y-4 text-xs">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="sm:col-span-2">
-                      <label className="block font-semibold text-slate-700 mb-1.5">
-                        MariaDB Hostname / IP *
-                      </label>
-                      <input
-                        type="text"
-                        value={dbConfig.host}
-                        onChange={(e) => {
-                          setDbConfig({ ...dbConfig, host: e.target.value });
-                          setDbCheckSuccess(false);
-                        }}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono"
-                      />
+                  <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-950 space-y-2.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-sm text-emerald-950">
+                            {dbStatus.connected
+                              ? 'MariaDB-Server erfolgreich verbunden'
+                              : 'Vorkonfigurierte MariaDB-Anbindung aktiv'}
+                          </div>
+                          <p className="text-xs text-emerald-800 mt-0.5">
+                            {dbStatus.connected
+                              ? `Dauerhafte Speicherung aktiv (${dbStatus.version}). Alle Änderungen an Klienten, Touren, Benutzern, Rollen und 2FA werden direkt in MariaDB gespeichert.`
+                              : `Auf Debian (.deb) und im Docker-Container wird MariaDB beim Start automatisch mit sicherem Zufallspasswort eingerichtet. Hier können Sie direkt auf „Weiter“ klicken.`}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleTestDbConnection}
+                        disabled={isTestingDb}
+                        className="px-2.5 py-1.5 rounded-md border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100 font-semibold flex items-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isTestingDb ? 'animate-spin' : ''}`} />
+                        <span>{isTestingDb ? 'Prüfe...' : 'Neu prüfen'}</span>
+                      </button>
                     </div>
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1.5">Port *</label>
-                      <input
-                        type="number"
-                        value={dbConfig.port}
-                        onChange={(e) => {
-                          setDbConfig({ ...dbConfig, port: Number(e.target.value) || 3306 });
-                          setDbCheckSuccess(false);
-                        }}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono"
-                      />
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-emerald-200/80 font-mono text-[11px]">
+                      <div className="bg-white/80 rounded px-2.5 py-1.5 border border-emerald-200/70">
+                        <span className="text-slate-500 block font-sans text-[10px]">Host</span>
+                        <span className="font-semibold text-slate-900">{dbConfig.host}:{dbConfig.port}</span>
+                      </div>
+                      <div className="bg-white/80 rounded px-2.5 py-1.5 border border-emerald-200/70">
+                        <span className="text-slate-500 block font-sans text-[10px]">Datenbank</span>
+                        <span className="font-semibold text-slate-900">{dbConfig.database}</span>
+                      </div>
+                      <div className="bg-white/80 rounded px-2.5 py-1.5 border border-emerald-200/70">
+                        <span className="text-slate-500 block font-sans text-[10px]">DB-Benutzer</span>
+                        <span className="font-semibold text-slate-900">{dbConfig.user}</span>
+                      </div>
+                      <div className="bg-white/80 rounded px-2.5 py-1.5 border border-emerald-200/70">
+                        <span className="text-slate-500 block font-sans text-[10px]">Zeichensatz</span>
+                        <span className="font-semibold text-slate-900">utf8mb4 / InnoDB</span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1.5">
-                        Datenbankname *
-                      </label>
-                      <input
-                        type="text"
-                        value={dbConfig.database}
-                        onChange={(e) => {
-                          setDbConfig({ ...dbConfig, database: e.target.value });
-                          setDbCheckSuccess(false);
-                        }}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1.5">
-                        DB-Benutzer *
-                      </label>
-                      <input
-                        type="text"
-                        value={dbConfig.user}
-                        onChange={(e) => {
-                          setDbConfig({ ...dbConfig, user: e.target.value });
-                          setDbCheckSuccess(false);
-                        }}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1.5">
-                        DB-Passwort
-                      </label>
-                      <input
-                        type="password"
-                        value={dbPassword}
-                        onChange={(e) => setDbPassword(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                    <div className="flex items-center gap-4">
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={dbConfig.ssl}
-                          onChange={(e) => setDbConfig({ ...dbConfig, ssl: e.target.checked })}
-                          className="rounded text-teal-700"
-                        />
-                        <span>TLS/SSL erzwingen</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={dbConfig.galeraCluster}
-                          onChange={(e) =>
-                            setDbConfig({ ...dbConfig, galeraCluster: e.target.checked })
-                          }
-                          className="rounded text-teal-700"
-                        />
-                        <span>Galera Cluster (HA)</span>
-                      </label>
-                    </div>
-
+                  <div>
                     <button
                       type="button"
-                      onClick={handleTestDbConnection}
-                      disabled={isTestingDb}
-                      className="px-3 py-1.5 rounded-md border border-teal-700 text-teal-800 hover:bg-teal-50 font-semibold flex items-center gap-1.5 cursor-pointer"
+                      onClick={() => setShowAdvancedDb((prev) => !prev)}
+                      className="text-xs font-semibold text-teal-800 hover:text-teal-900 underline cursor-pointer"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isTestingDb ? 'animate-spin' : ''}`} />
-                      <span>{isTestingDb ? 'Prüfe MariaDB...' : 'Verbindung & Schema prüfen'}</span>
+                      {showAdvancedDb
+                        ? 'Erweiterte Datenbank-Details ausblenden'
+                        : 'Erweiterte Datenbank-Details anzeigen (optional)'}
                     </button>
                   </div>
 
-                  {dbCheckSuccess && (
-                    <div className="p-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-900 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>
-                        MariaDB 10.11.6 erreichbar (<span className="font-mono">{dbConfig.host}:{dbConfig.port}/{dbConfig.database}</span>, Zeichensatz <span className="font-mono">utf8mb4</span>, Tabellen leer &amp; bereit).
-                      </span>
+                  {showAdvancedDb && (
+                    <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-3">
+                      <p className="text-[11px] text-slate-600">
+                        Die Zugangsdaten werden serverseitig sicher über <code className="font-mono">/etc/pflegerust/db.env</code> (Debian) bzw. Container-Umgebungsvariablen verwaltet.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            MariaDB Hostname / IP
+                          </label>
+                          <input
+                            type="text"
+                            value={dbConfig.host}
+                            onChange={(e) => setDbConfig({ ...dbConfig, host: e.target.value })}
+                            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">Port</label>
+                          <input
+                            type="number"
+                            value={dbConfig.port}
+                            onChange={(e) =>
+                              setDbConfig({ ...dbConfig, port: Number(e.target.value) || 3306 })
+                            }
+                            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono bg-white"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            Datenbankname
+                          </label>
+                          <input
+                            type="text"
+                            value={dbConfig.database}
+                            onChange={(e) => setDbConfig({ ...dbConfig, database: e.target.value })}
+                            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            DB-Benutzer
+                          </label>
+                          <input
+                            type="text"
+                            value={dbConfig.user}
+                            onChange={(e) => setDbConfig({ ...dbConfig, user: e.target.value })}
+                            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md font-mono bg-white"
+                          />
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -836,24 +905,10 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
                   )}
                 </div>
 
-                {/* Initial Data Choice */}
+                {/* Initial Data Choice (Leere Produktiv-Datenbank als Standard!) */}
                 <div className="space-y-2 text-xs">
                   <div className="font-semibold text-slate-800">Anfangsbestand der Klientendaten</div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setLoadDemoCareData(true)}
-                      className={`p-3 rounded-md border text-left transition-colors cursor-pointer ${
-                        loadDemoCareData
-                          ? 'border-teal-700 bg-teal-50/60'
-                          : 'border-slate-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="font-bold text-slate-900">Mit Beispiel-Klienten &amp; Touren</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        Ideal zum Testen von Akten, SIS &amp; Touren. Benutzerliste startet sauber nur mit Ihrem neuen Admin.
-                      </div>
-                    </button>
                     <button
                       type="button"
                       onClick={() => setLoadDemoCareData(false)}
@@ -863,9 +918,25 @@ export const SetupWizardView: React.FC<SetupWizardViewProps> = ({
                           : 'border-slate-200 hover:bg-slate-50'
                       }`}
                     >
-                      <div className="font-bold text-slate-900">Leere Produktiv-Datenbank</div>
+                      <div className="font-bold text-slate-900">
+                        Leere Produktiv-Datenbank (Empfohlen)
+                      </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">
-                        0 Klienten, 0 Touren – bereit für den direkten SNAP-Import oder Neuaufbau.
+                        0 Klienten, 0 Touren – direkt bereit für Ihre echten Klienten, Mitarbeiter und SNAP-Import.
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLoadDemoCareData(true)}
+                      className={`p-3 rounded-md border text-left transition-colors cursor-pointer ${
+                        loadDemoCareData
+                          ? 'border-teal-700 bg-teal-50/60'
+                          : 'border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="font-bold text-slate-900">Optional: Beispiel-Klienten laden</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        Legt einige Test-Klienten zum Ausprobieren an (jederzeit später änderbar).
                       </div>
                     </button>
                   </div>
