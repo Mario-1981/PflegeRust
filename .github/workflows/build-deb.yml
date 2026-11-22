@@ -27,12 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Repository auschecken
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Node.js einrichten
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Abhängigkeiten installieren
         run: |
@@ -70,7 +70,7 @@ jobs:
           dpkg-deb --contents pflegerust_*.deb | head -n 40
 
       - name: Debian-Paket als Workflow-Artefakt hochladen
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pflegerust-deb-${{ steps.version.outputs.pkg_version }}
           path: |
@@ -80,7 +80,7 @@ jobs:
 
       - name: GitHub Release mit .deb Paket erstellen
         if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || steps.version.outputs.tag_name }}
           name: PflegeRust ${{ steps.version.outputs.tag_name }}
